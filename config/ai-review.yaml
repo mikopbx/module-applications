@@ -18,7 +18,9 @@ limits:
   max_output_tokens: 16000       # per request
   retries: 2                     # the SDK retries 408/409/429/5xx and connection errors this many times
   max_read_bytes: 3000000        # total source the agent may read in one review
-  max_runs_per_pull_request_per_day: 3
+  # AI reviews a person (the pull request's author) may start in 24 hours, over all their pull requests. No person
+  # approves a run: this limit, the cheap checks before it and the per-run limits above bound the cost.
+  max_runs_per_person_per_day: 3
 
 # USD per million tokens, for the estimate in the report (the bill is in the Anthropic Console).
 prices:

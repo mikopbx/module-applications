@@ -262,7 +262,7 @@ class FakeGitHub:
         }
         self.run = {"path": ".github/workflows/test.yaml", "repository": {"full_name": self.repo}, "event": "pull_request_target",
                     "status": "completed", "html_url": "https://example.invalid/runs/7"}
-        self.pull = {"state": "open", "head": {"sha": self.head}}
+        self.pull = {"state": "open", "head": {"sha": self.head}, "user": {"login": "Publisher"}}
         self.jobs = [{"name": "module (x86_64)", "conclusion": "success"}, {"name": "module (arm64)", "conclusion": "success"}]
         self.previous_requests = []
         for name, value in tamper.items():
@@ -279,7 +279,7 @@ class FakeGitHub:
             return self.application
         if path.startswith("actions/runs/7/jobs"):
             return {"jobs": self.jobs}
-        if path.startswith("actions/artifacts?name=ai-request-pr-1"):
+        if path.startswith("actions/artifacts?name=ai-request-by-publisher&"):
             return {"artifacts": self.previous_requests}
         if path.startswith("actions/artifacts?name=ai-report-"):
             return {"artifacts": []}
@@ -319,7 +319,8 @@ def forged_result(package_sha, **changes):
     (lambda s: forged_result(s, commit="0" * 40), "another module or commit"),
     (lambda s: forged_result(s, outcome="fails"), "but its job concluded success"),
     (lambda s: forged_result(s, runs=[{"image": {"digest": "sha256:" + "1" * 64}}]), "not obtained on the current MikoPBX image"),
-    (lambda s: FakeGitHub(s, previous_requests=[{"created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}] * 3), "AI reviews in the last day"),
+    (lambda s: FakeGitHub(s, previous_requests=[{"created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}] * 3), "Publisher started 3 AI reviews in the last day (limit 3 a person)"),
+    (lambda s: FakeGitHub(s, pull={"state": "open", "head": {"sha": "b" * 40}}), "has no usable author login"),
 ])
 def test_prepare_refuses_forged_or_stale_input(tmp_path, package_sha, make, reason):
     with pytest.raises(ai_review.Skip, match=reason.replace("(", r"\(").replace(")", r"\)")):

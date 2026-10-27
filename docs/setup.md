@@ -30,7 +30,7 @@ Settings → Environments:
 
 | Environment | Protection | Secrets | Why |
 |---|---|---|---|
-| `ai-review` | Required reviewers: MIKO's reviewers, "Prevent self-review" on; deployment branches: `main` only | `ANTHROPIC_API_KEY` (an administrator pastes the value; nobody else sees it) | every AI review run is approved by a person and is the only place the key exists (docs/ai-review.md) |
+| `ai-review` | Deployment branches: `main` only; no required reviewers | `ANTHROPIC_API_KEY` (an administrator pastes the value; nobody else sees it) | the only place the key exists; a run needs no approval, the cost is bounded by 3 reviews a day per pull request author and the per-run limits (docs/ai-review.md) |
 | `image-update` | Deployment branches: `main` only | `IMAGE_UPDATE_APP_PRIVATE_KEY` (option B below) | the App key is used only by the job that opens the image update pull request |
 
 Repository variables (Settings → Secrets and variables → Actions → Variables):
@@ -78,4 +78,4 @@ no terms box, no agreement). It still needs a reviewer's approval. Without the A
 ## 7. The first runs
 
 After the import: a test application with a full SHA passes on x86_64 and arm64, a deliberately broken one is
-rejected, and the AI review runs after the tests (its environment asks a reviewer to approve).
+rejected, and the AI review runs by itself after the tests (at most 3 a day per author).
