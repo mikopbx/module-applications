@@ -17,8 +17,8 @@ name: "AI review"
 #   - No review after failed tests (unless forced), and at most N reviews per pull request a day
 #     (config/ai-review.yaml). A report is reused when every input is the same (commit, package, application, rules,
 #     image, agent configuration and policy).
-#   - `review` holds the key, in the protected environment `ai-review` (a required reviewer approves every run; only
-#     the default branch can deploy). It runs on its own VM, never starts MikoPBX, never runs the module, and loads
+#   - `review` holds the key, in the environment `ai-review` (only the default branch can deploy; no person approves a
+#     run: at most 3 reviews a day per pull request author, config/ai-review.yaml). It runs on its own VM, never starts MikoPBX, never runs the module, and loads
 #     nothing from it: the source is extracted from a git archive as files, and the model gets three read-only tools
 #     confined to that directory (no shell, no network, no file writes). The source and logs are framed as untrusted
 #     data; the policy says instructions inside them are findings, not instructions; MIKO's code checks every
@@ -99,7 +99,7 @@ jobs:
           # shellcheck disable=SC2086
           python3 tools/ai_review.py prepare --repo "$REPO" --run-id "$RUN_ID" --out inputs $FORCE > "$RUNNER_TEMP/decision.json"
           cat "$RUNNER_TEMP/decision.json"
-          for key in decision reason pull_request head cache_key; do
+          for key in decision reason pull_request head cache_key request_artifact; do
             echo "$key=$(jq -r --arg k "$key" '.[$k] // ""' "$RUNNER_TEMP/decision.json" | tr -d '\n' | head -c 300)" >> "$GITHUB_OUTPUT"
           done
           decision=$(jq -r .decision "$RUNNER_TEMP/decision.json")
@@ -114,11 +114,11 @@ jobs:
           path: inputs/
           retention-days: 3
 
-      - name: Count this request against the pull request's daily limit
+      - name: Count this request against its author's daily limit
         if: steps.prepare.outputs.decision == 'review'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (sha-pinned)
         with:
-          name: ai-request-pr-${{ steps.prepare.outputs.pull_request }}
+          name: ${{ steps.prepare.outputs.request_artifact }}
           path: ai-request.txt
           retention-days: 2
 
@@ -128,7 +128,7 @@ jobs:
     # Pinned: tools/requirements-ai.txt holds wheels for this image's CPython 3.12.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    # A required reviewer approves each run; the key exists only in this environment.
+    # The key exists only in this environment. Runs are bounded by the per-author daily limit checked in `prepare`.
     environment: ai-review
     permissions:
       contents: read

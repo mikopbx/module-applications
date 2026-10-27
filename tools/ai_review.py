@@ -499,6 +499,9 @@ def prepare(github, run_id, out, force=False, config=None, now=None):
         raise Skip(f"pull request #{number} is not open")
     if pull["head"]["sha"] != provenance["head"]:
         raise Skip(f"pull request #{number} moved to {pull['head']['sha'][:12]} after the test of {provenance['head'][:12]}: the results are stale")
+    author = str((pull.get("user") or {}).get("login") or "")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]*(\[bot\])?", author):
+        raise Skip(f"pull request #{number} has no usable author login")
     application_bytes = github.get(f"contents/applications/{module_id}/application.yaml?ref={provenance['head']}", accept="application/vnd.github.raw")
     if sha256(application_bytes) != provenance["application_sha256"]:
         raise Skip("the application at the pull request's head is not the one the tests used")
@@ -549,15 +552,17 @@ def prepare(github, run_id, out, force=False, config=None, now=None):
         "application_sha256": application_sha,
         "application_text": application_bytes.decode("utf-8", errors="replace"), "rules_version": rules_version,
         "image_digest": image_digest, "cache_key": key, "results": results, "forced": bool(force and test_outcome != "passed"),
+        "author": author,
         "test_run": {"id": int(run_id), "url": run.get("html_url"), "pull_request": number, "head": provenance["head"],
                      "architectures": architectures, "test_outcome": test_outcome},
     }
 
-    # Rate limit: requests recorded by earlier runs of this workflow for this pull request in the last day.
+    # Rate limit: requests recorded by earlier runs of this workflow for this person (the pull request's author, over all
+    # their pull requests) in the last day.
     since = now - datetime.timedelta(days=1)
-    recent = github.get(f"actions/artifacts?name=ai-request-pr-{number}&per_page=100").get("artifacts", [])
+    recent = github.get(f"actions/artifacts?name={request_artifact(author)}&per_page=100").get("artifacts", [])
     count = sum(1 for a in recent if _when(a.get("created_at")) >= since)
-    limit = config["limits"]["max_runs_per_pull_request_per_day"]
+    limit = config["limits"]["max_runs_per_person_per_day"]
 
     # Cache: a report from this workflow with the same key.
     cached = None
@@ -571,7 +576,7 @@ def prepare(github, run_id, out, force=False, config=None, now=None):
             cached = report
             break
     if cached is None and count >= limit:
-        raise Skip(f"pull request #{number} had {count} AI reviews in the last day (limit {limit})")
+        raise Skip(f"{author} started {count} AI reviews in the last day (limit {limit} a person)")
 
     out.mkdir(parents=True, exist_ok=True)
     (out / "context.json").write_text(json.dumps(context, indent=2, ensure_ascii=False))
@@ -579,6 +584,11 @@ def prepare(github, run_id, out, force=False, config=None, now=None):
     if cached:
         (out / "cached-report.json").write_text(json.dumps(cached, indent=2, ensure_ascii=False))
     return context, cached
+
+
+def request_artifact(author):
+    """Name of the artifact that counts one AI review against `author`'s daily limit."""
+    return "ai-request-by-" + author.lower().replace("[bot]", "-bot")
 
 
 def _when(text):
@@ -693,6 +703,7 @@ def main(argv=None):
             print(json.dumps({"decision": "no_application", "reason": str(none), "pull_request": none.pull_request, "head": none.head}))
             return 0
         print(json.dumps({"decision": "cached" if cached else "review", "pull_request": context["test_run"]["pull_request"],
+                          "request_artifact": request_artifact(context["author"]),
                           "module_id": context["module_id"], "commit": context["commit"], "head": context["test_run"]["head"],
                           "cache_key": context["cache_key"]}))
         return 0

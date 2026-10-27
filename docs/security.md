@@ -8,7 +8,7 @@ trusts, and how that was tested. The threat model of each workflow is also writt
 | Zone | Runs | Has | Built here |
 |---|---|---|---|
 | Tests (`test.yaml`, `tools/check`) | the module's PHP, inside a MikoPBX container | nothing: `contents: read`, no secrets, no cache | yes |
-| AI review (`ai-review.yaml`) | MIKO's analyser; the module's files and logs only as data, three read-only tools | the Anthropic key only, in the `ai-review` environment (a person approves each run) | yes ([docs/ai-review.md](ai-review.md)) |
+| AI review (`ai-review.yaml`) | MIKO's analyser; the module's files and logs only as data, three read-only tools | the Anthropic key only, in the `ai-review` environment (default branch only; 3 reviews a day per author) | yes ([docs/ai-review.md](ai-review.md)) |
 | Registration (`register.yaml`) | MIKO's code after merge, on the protected branch | the licence-server key only | no (LIC-614) |
 
 No zone hands its key to another, and none runs the module next to a key.
