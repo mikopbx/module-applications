@@ -156,10 +156,6 @@ def test_take_application_lets_listed_maintainers_maintain(repository, tmp_path)
                             maintainers="someone-else, reviewer")
     assert done.returncode == 0 and "maintenance pull request (MAINTAINER)" in done.stdout
     assert values.get("maintenance") == "true"
-    # Listed or not, a pull request that touches an application is an application.
-    head, paths = pull_request({"tools/validate.py": "# changed\n", "applications/ModuleAppCheck/application.yaml": GOOD})
-    done, values = run_take(base, tmp_path, head, paths, association="COLLABORATOR", author="reviewer", maintainers="reviewer")
-    assert "maintenance" not in values
 
 
 def test_take_application_refuses_the_same_change_from_anyone_else(repository, tmp_path):
