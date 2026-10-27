@@ -11,7 +11,7 @@ Test (pull_request_target)            AI review (workflow_run, default branch)
   module (x86_64) ─ result artifact ─▶    checks the run, the pull request, the application, the jobs, the results
   module (arm64)  ─ result artifact ─▶    rebuilds the ZIP itself, fetches the source as git objects
                                           cache? rate limit?
-                                       review   (environment ai-review: a person approves; the only job with the key)
+                                       review   (environment ai-review: the only job with the key)
                                           three read-only tools over the source, MIKO's policy, structured JSON answer
                                           MIKO's code verifies every finding (rule, file, line, quoted evidence)
                                        comment  (pull-requests + statuses: write)
@@ -39,7 +39,8 @@ Test (pull_request_target)            AI review (workflow_run, default branch)
   sits on the tested head, so a new push leaves the new head without it.
 - **Cache.** A report is reused (artifact `ai-report-<key>`, 30 days) only when all of the above are the same.
 - **Limits** (`config/ai-review.yaml`): 25 turns, $0.75 (estimate), 10 minutes, 16 000 output tokens per request,
-  3 MB of source read, 3 reviews per pull request a day, 2 SDK retries: about three times the largest module of
+  3 MB of source read, 3 reviews a day per person (the pull request's author, over all their pull requests; no person
+  approves a run), 2 SDK retries: about three times the largest module of
   calibration run 2.
 
 ## Report
@@ -53,7 +54,7 @@ configuration: an estimate; the bill is in the Anthropic Console.
 ## Calibration
 
 `config/ai-calibration.yaml` lists modules at pinned commits with what the review must find. A person runs it:
-Actions → AI review → Run workflow → `calibrate: true`. One approval, one job, a budget for the whole run ($8, of
+Actions → AI review → Run workflow → `calibrate: true`. One job, a budget for the whole run ($8, of
 the first $10 of the credit). The summary (caught, missed, false positives, turns, tokens, estimated cost, time per
 module) is in the run summary and the `ai-calibration` artifact.
 
