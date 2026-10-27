@@ -1,7 +1,7 @@
 schema_version: 1
 module_id: ModuleAppCheck
 publisher_id: 144251268
-name: Application check
+name: Application check (pilot)
 description: Control module for the module-applications checks. Installs, runs one worker, answers its API, uninstalls cleanly.
 repo: https://github.com/mikopbx/module-applications
 commit: 1a4dfa6326c83d1ebcb40838ed7c0aebc24bbcda
