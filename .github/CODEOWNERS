@@ -1,4 +1,4 @@
 # Every change, an application or maintenance, is approved by one of MIKO's reviewers before it merges (the ruleset
 # requires code owner review, docs/setup.md). The author of a pull request cannot approve it, so any other reviewer's
 # approval is enough.
-* @jorikfon @boffart @excla1mmm
+* @jorikfon @boffart @ivstep @excla1mmm
