@@ -31,7 +31,15 @@ def repository(tmp_path):
     """A base checkout (a copy of this directory) with a bare origin, and a helper to open a pull request on it."""
     origin = tmp_path / "origin.git"
     base = tmp_path / "base"
-    shutil.copytree(BASE, base, ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", "fixtures", "modules"))
+    ignored = shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", "fixtures", "modules")
+
+    def ignore(directory, names):
+        # The registry starts empty, as on main: a pull request's own application is not part of the base.
+        if pathlib.Path(directory).resolve() == (BASE / "applications").resolve():
+            return [name for name in names if name != ".gitkeep"]
+        return ignored(directory, names)
+
+    shutil.copytree(BASE, base, ignore=ignore)
     git(base, "init", "--quiet", "--initial-branch=main")
     git(base, "add", "--all")
     git(base, "commit", "--quiet", "--no-gpg-sign", "-m", "base")
