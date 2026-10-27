@@ -24,7 +24,8 @@ concurrency:
 
 jobs:
   pytest:
-    runs-on: ubuntu-latest
+    # CPython 3.12, as the AI review's pinned wheels (tools/requirements-ai.txt) expect.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
@@ -34,6 +35,7 @@ jobs:
       - name: Install the tools' dependencies and pytest
         run: |
           python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet --require-hashes -r tools/requirements-ai.txt
           "$RUNNER_TEMP/venv/bin/pip" install --quiet -r tools/requirements.txt pytest
 
       - name: pytest

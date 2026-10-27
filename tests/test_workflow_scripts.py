@@ -31,7 +31,7 @@ def repository(tmp_path):
     """A base checkout (a copy of this directory) with a bare origin, and a helper to open a pull request on it."""
     origin = tmp_path / "origin.git"
     base = tmp_path / "base"
-    shutil.copytree(BASE, base, ignore=shutil.ignore_patterns("__pycache__", ".pytest_cache", "fixtures", "modules"))
+    shutil.copytree(BASE, base, ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", "fixtures", "modules"))
     git(base, "init", "--quiet", "--initial-branch=main")
     git(base, "add", "--all")
     git(base, "commit", "--quiet", "--no-gpg-sign", "-m", "base")
