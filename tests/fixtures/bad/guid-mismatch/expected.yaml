@@ -1,0 +1,5 @@
+# module.json at the commit has another moduleUniqueID
+online: true
+problems:
+- rule: APP-008
+  contains: moduleUniqueID is 'ModuleAppCheck'

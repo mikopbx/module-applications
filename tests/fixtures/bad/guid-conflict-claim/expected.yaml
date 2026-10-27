@@ -1,0 +1,7 @@
+# a second directory claims an existing module_id
+online: false
+problems:
+- rule: APP-005
+  contains: module_id 'ModuleAppCheck' is already claimed by applications/ModuleAppOther/
+- rule: APP-003
+  contains: must equal the directory name

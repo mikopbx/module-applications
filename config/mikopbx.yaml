@@ -1,0 +1,33 @@
+# Trusted test configuration, owned by MIKO. An application cannot change it: the workflows read this file from the
+# base branch, and a pull request that touches it is rejected before any check runs.
+#
+# images: the MikoPBX builds the checks install modules into. `digest` is the multi-arch index, so the same entry
+# serves x86_64 and arm64 runners; `platforms` records the per-architecture manifests for the report.
+# An application's compatibility.min_pbx_version selects the images whose version is at least that.
+
+config_version: 1
+
+images:
+  - version: "2026.6.34"
+    image: docker.io/mikopbx/mikopbx
+    tag: "2026.6.34"
+    digest: sha256:ff5cc0238a4e170bfbf8c0be9a59b58c8affb6fb24b36d1506f5fc0cb41f7691
+    platforms:
+      x86_64: sha256:50ed89821560291b7928e92390f7a844e065c9138c5e7221c63370cf41fe1f5d
+      arm64: sha256:3af27a8ecc070108bdde4a2e3939407eeda0574896e55a547ee221973d0b6a6c
+
+# Limits for the MikoPBX container that runs the module.
+container:
+  cpus: 2
+  memory: 3g
+  pids_limit: 2048
+  # A Docker network created with --internal: no route out of the container, no metadata service, no host network.
+  # MikoPBX does not boot with --network none (Asterisk needs an interface), see docs/mikopbx-docker.md.
+  network: internal
+
+# Seconds.
+timeouts:
+  boot: 300
+  operation: 300
+  clone: 120
+  total: 1800

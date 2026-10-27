@@ -1,0 +1,13 @@
+# module.json and Setup break the MikoPBX contract
+online: true
+problems:
+- rule: MJ-003
+  contains: below 2020.2.468
+- rule: MJ-004
+  contains: version 'v1'
+- rule: MJ-005
+  contains: lic_product_id '42' must be absent or a whole number
+- rule: MJ-005
+  contains: lic_feature_id -1 must be absent or a whole number
+- rule: CODE-001
+  contains: namespace Modules\ModuleAppBadManifest\Setup

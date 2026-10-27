@@ -1,0 +1,16 @@
+# Paid control application (M04, rule LIFE-007): module.json has lic_product_id and lic_feature_id. Expected results:
+# tests/modules/expected.yaml.
+schema_version: 1
+module_id: ModuleAppPaid
+publisher_id: 1
+name: Paid application check
+description: Paid control module for the module-applications checks. Without a licence key MikoPBX refuses it; the test copy installs, runs one worker, answers its API, uninstalls cleanly.
+repo: https://github.com/module-applications-test/ModuleAppPaid
+commit: a7fbe5beb604710f133b943e09a6046d765decb5
+license: GPL-3.0-or-later
+support_email: module-applications@example.com
+maintainers: [module-applications-test]
+compatibility:
+  min_pbx_version: "2024.1.0"
+  max_pbx_version: null
+  architectures: [x86_64, arm64]

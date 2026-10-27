@@ -1,0 +1,7 @@
+# fields only MIKO may set
+online: false
+problems:
+- rule: APP-002
+  contains: '''trust_level'' is set by MIKO'
+- rule: APP-002
+  contains: '''budget_usd'' is set by MIKO'

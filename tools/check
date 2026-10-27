@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+# Copyright 2026 Anthropic PBC
+# Modified for MikoPBX module-applications, 2026.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Adapted from tools/check in https://github.com/anthropics/oss-scanner (Apache-2.0): the shape (validate, clone,
+# build, run isolated) and the exit codes come from there. The MikoPBX steps are in tools/check_install.py.
+"""
+Check a module the same way CI does: package it from its commit, then install, enable, disable and uninstall it in
+a fresh MikoPBX container.
+
+    tools/check <module_id>               applications/<module_id>/ of this repository
+    tools/check path/to/applications/<id> an application directory elsewhere (for example a test fixture)
+
+This runs the following steps and prints a JSON result on stdout (also written to --output):
+
+    1. Check the application against the rules (tools/validate.py --online).
+    2. Fetch exactly `commit` from `repo`, anonymously. Nothing is checked out and no hook runs.
+    3. Build the module ZIP from that commit and record its sha256.
+    4. Start a fresh MikoPBX container: the image and digest come from config/mikopbx.yaml, never from the
+       application. It sits on a Docker network with no route out.
+    5. If --previous-commit is given, install that version and update it to this one; otherwise the update step is
+       "not applicable" (first version).
+    6. Install through the REST API, php -l every PHP file, enable, look for the module's workers and API, disable,
+       uninstall, scan the logs for the module's errors, and check that MikoPBX still works.
+       A paid module (lic_product_id or lic_feature_id > 0, rule LIFE-007): its package is installed first to see Core
+       refuse it for the licence alone (step "license", status license_required); the steps above then run on a test
+       copy with the licence ids set to 0. What needs a licence is reported as not checked, never as passed.
+    7. Remove the container and its network.
+
+Security note: the module's PHP runs only inside the MikoPBX container, but that container runs on your Docker. Check
+a module from someone you don't trust on a machine with nothing to lose; CI uses a throw-away runner.
+
+Exit codes: 0 if every step passes, 1 if the module fails a step, 2 if the application breaks the rules,
+3 if the module could not be checked (Docker, the image, the network).
+
+Requires git, Docker, PyYAML and jsonschema (pip install -r tools/requirements.txt).
+"""
+import argparse
+import datetime
+import json
+import pathlib
+import sys
+import tempfile
+import time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import check_install  # noqa: E402
+import validate  # noqa: E402
+from check_install import Broken, Failed, Pbx, Steps, machine, say  # noqa: E402
+
+CONFIG = validate.BASE / "config" / "mikopbx.yaml"
+
+
+def load(target):
+    """Return (root, module_id) for a module_id under applications/ or the path of an application directory."""
+    path = pathlib.Path(target)
+    if (path / validate.CONFIG_FILE).exists():
+        path = path.absolute()
+        return path.parent.parent, path.name
+    return validate.BASE, target
+
+
+def images_for(config, compatibility, wanted=None):
+    """The images in MIKO's config whose version the application declares it supports."""
+    low = validate.version_tuple(compatibility["min_pbx_version"])
+    high = compatibility.get("max_pbx_version")
+    chosen = []
+    for image in config["images"]:
+        version = validate.version_tuple(image["version"])
+        if version < low or (high and version > validate.version_tuple(high)):
+            continue
+        if wanted and image["version"] != wanted:
+            continue
+        chosen.append(image)
+    return chosen
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("application", help="a module_id under applications/, or the path of an application directory")
+    parser.add_argument("--image-version", help="only this MikoPBX version from config/mikopbx.yaml")
+    parser.add_argument("--previous-commit", help="the previously approved commit, to test the update from it")
+    parser.add_argument("--expect", type=pathlib.Path, help="YAML with what the module must show: {workers: N, api: true}")
+    parser.add_argument("--output", type=pathlib.Path, help="also write the JSON result here")
+    parser.add_argument("--keep", action="store_true", help="leave the container running (for debugging)")
+    parser.add_argument("--config", type=pathlib.Path, default=CONFIG, help="test configuration (default: config/mikopbx.yaml; another one only to try a new image)")
+    options = parser.parse_args()
+
+    started = time.monotonic()
+    root, module_id = load(options.application)
+    config = validate.yaml.safe_load(options.config.read_text(encoding="utf-8"))
+    expect = validate.yaml.safe_load(options.expect.read_text(encoding="utf-8")) if options.expect else {}
+    steps = Steps()
+    result = {
+        "module_id": module_id,
+        "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        "rules_version": validate.RULES_VERSION,
+        "schema_version": validate.SCHEMA_VERSION,
+        "config_version": config["config_version"],
+        "architecture": machine(),
+        "steps": steps.done,
+    }
+
+    def finish(outcome, code):
+        result["outcome"] = outcome
+        result["seconds"] = round(time.monotonic() - started, 1)
+        text = json.dumps(result, indent=2, ensure_ascii=False)
+        if options.output:
+            options.output.write_text(text + "\n", encoding="utf-8")
+        print(text)
+        say(f"\n{module_id}: {outcome}")
+        return code
+
+    # 1. The rules.
+    start = time.monotonic()
+    [checked] = validate.validate(root, [module_id], online=True)
+    application = checked.config or {}
+    result.update({k: application.get(k) for k in ("publisher_id", "repo", "commit")})
+    result["validation"] = checked.as_dict()
+    if checked.problems:
+        problems = "; ".join(f"[{p['rule']}] {p['message']}" for p in checked.problems)
+        steps.record("validate", "fail", validate.printable(problems), time.monotonic() - start)
+        return finish("breaks the rules", 2)
+    steps.record("validate", "pass", f"rules {validate.RULES_VERSION}, {len(checked.warnings)} recommendation(s)", time.monotonic() - start)
+
+    architectures = application["compatibility"]["architectures"]
+    if machine() not in architectures:
+        steps.record("lifecycle", "not_applicable", f"the module does not support {machine()} (it declares {', '.join(architectures)})")
+        return finish("not applicable on this architecture", 0)
+    images = images_for(config, application["compatibility"], options.image_version)
+    if not images:
+        steps.record("image", "error", "no MikoPBX image in config/mikopbx.yaml matches compatibility")
+        return finish("could not be checked", 3)
+
+    with tempfile.TemporaryDirectory(prefix="module-check-") as work:
+        work = pathlib.Path(work)
+        # 2-3. The package.
+        try:
+            def build():
+                info = check_install.package(application["repo"], application["commit"], work / "git", work / f"{module_id}.zip",
+                                             config["timeouts"]["clone"], test_copy=work / f"{module_id}.test.zip")
+                result["package"] = info
+                paid = (f"; paid module (lic_product_id {info['lic_product_id']}, lic_feature_id {info['lic_feature_id']}): "
+                        f"test copy sha256 {info['test_copy_sha256']}, differs from the package only in module.json "
+                        f"{', '.join(info['test_copy_diff']['module_json_keys'])} = 0 (unpacked and compared)") if "test_copy_sha256" in info else ""
+                return f"{info['files']} files, {info['bytes']} bytes, sha256 {info['sha256']}{paid}", {}
+
+            steps.run("package", build)
+            paid = "test_copy_sha256" in result["package"]
+            previous_zip = None
+            if options.previous_commit:
+                def build_previous():
+                    info = check_install.package(application["repo"], options.previous_commit, work / "git-previous", work / "previous.zip",
+                                                 config["timeouts"]["clone"], test_copy=work / "previous.test.zip")
+                    result["previous_package"] = {"commit": options.previous_commit, **info}
+                    return f"previous commit {options.previous_commit[:12]}, sha256 {info['sha256']}", {}
+
+                steps.run("package_previous", build_previous)
+                previous_zip = work / ("previous.test.zip" if "test_copy_sha256" in result["previous_package"] else "previous.zip")
+            if paid:
+                package_info = result["package"]
+                result["license_required"] = ("licence activation and capture, and whatever the module does only with a licence: "
+                                              "not checked (no licence key in the tests). The publisher's package "
+                                              f"(sha256 {package_info['sha256']}) was refused for the licence; install, enable, disable, "
+                                              f"uninstall ran on a test copy (sha256 {package_info['test_copy_sha256']}) that differs only in "
+                                              f"module.json {', '.join(package_info['test_copy_diff']['module_json_keys'])} = 0")
+        except Failed:
+            return finish("fails", 1)
+        except Broken:
+            return finish("could not be checked", 3)
+
+        # 4-7. One container per image.
+        result["runs"] = []
+        failed = broken = False
+        for image in images:
+            pbx = Pbx(image=image, limits=config["container"])
+            run_steps = Steps()
+            run = {"mikopbx_version": image["version"], "steps": run_steps.done}
+            result["runs"].append(run)
+            try:
+                def start_container():
+                    run["image"] = pbx.start()
+                    return f"{image['image']}@{image['digest'][:19]}… ({run['image']['architecture']}), network --internal", {}
+
+                run_steps.run("container", start_container)
+                run["evidence"] = {}
+                check_install.lifecycle(pbx, module_id, work / (f"{module_id}.test.zip" if paid else f"{module_id}.zip"), previous_zip,
+                                        config["timeouts"], run_steps, expect, run["evidence"],
+                                        licensed_zip=work / f"{module_id}.zip" if paid else None)
+                run["outcome"] = "passes"
+                run["retries"] = pbx.retries
+            except Failed:
+                run["outcome"] = "fails"
+                run["retries"] = pbx.retries
+                failed = True
+            except Broken:
+                run["outcome"] = "could not be checked"
+                broken = True
+            finally:
+                if options.keep:
+                    say(f"container left running: {pbx.name}")
+                else:
+                    pbx.stop()
+    if failed:
+        return finish("fails", 1)
+    if broken:
+        return finish("could not be checked", 3)
+    return finish("passes", 0)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

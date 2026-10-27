@@ -1,0 +1,5 @@
+# directory differs from module_id
+online: false
+problems:
+- rule: APP-003
+  contains: must equal the directory name

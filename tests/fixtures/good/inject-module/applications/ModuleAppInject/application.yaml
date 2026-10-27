@@ -1,0 +1,15 @@
+# Test application. Expected results: tests/modules/expected.yaml.
+schema_version: 1
+module_id: ModuleAppInject
+publisher_id: 1
+name: Inject module
+description: Test module for the module-applications checks, see tests/modules/ModuleAppInject/README.md.
+repo: https://github.com/module-applications-test/ModuleAppInject
+commit: c7623a0fdc336b06f2b6ef8ae358e7052c750c0b
+license: GPL-3.0-or-later
+support_email: module-applications@example.com
+maintainers: [module-applications-test]
+compatibility:
+  min_pbx_version: "2024.1.0"
+  max_pbx_version: null
+  architectures: [x86_64, arm64]

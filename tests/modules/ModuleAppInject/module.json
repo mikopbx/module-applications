@@ -1,0 +1,7 @@
+{
+  "developer": "module-applications pilot",
+  "moduleUniqueID": "ModuleAppInject",
+  "support_email": "module-applications@example.com",
+  "version": "1.0.0",
+  "min_pbx_version": "2024.1.0"
+}

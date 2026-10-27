@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+# Copyright 2026 the module-applications authors
+# SPDX-License-Identifier: Apache-2.0
+"""Build the module ZIP from one commit, exactly as tools/check and CI do, and print its sha256.
+
+    tools/package <repo URL or local path> <full commit SHA> <out.zip>
+
+The commit is fetched into a temporary bare repository; nothing is checked out and no hook or script runs. Entries are
+sorted, dated at the commit time and given 0644/0755 permissions, so the same commit always gives the same ZIP.
+%ModuleVersion% in module.json becomes 0.0.0-<12 hex of the commit>.
+"""
+import argparse
+import json
+import pathlib
+import sys
+import tempfile
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import check_install  # noqa: E402
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("repo")
+    parser.add_argument("commit")
+    parser.add_argument("out", type=pathlib.Path)
+    options = parser.parse_args()
+    with tempfile.TemporaryDirectory() as work:
+        try:
+            info = check_install.package(options.repo, options.commit, pathlib.Path(work) / "git", options.out)
+        except check_install.Failed as failure:
+            print(f"cannot package: {failure}", file=sys.stderr)
+            return 1
+    print(json.dumps({"commit": options.commit, **info}, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

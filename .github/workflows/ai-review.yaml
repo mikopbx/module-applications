@@ -1,0 +1,259 @@
+name: "AI review"
+# After the Test workflow passes for an application, MIKO's analyser (tools/ai_review.py, policy ai/policy.md) reads
+# the module's source as data and reports blockers, each tied to a rule in rules/rules.yaml with file, line and the
+# quoted evidence, apart from recommendations. It approves nothing: the report informs the person who decides.
+#
+# Threat model. This is the only workflow with the Anthropic key, so nothing from the module or the pull request
+# runs here and nothing from the test runners is trusted:
+#   - workflow_run, not pull_request_target: it starts after Test finishes and runs this file and tools/ from the
+#     default branch. A person can also start it for a Test run (workflow_dispatch), with `force` to review a module
+#     whose tests failed (calibration).
+#   - `prepare` (no key, read-only token) checks the inputs against the GitHub API, not against the artifacts alone:
+#     the run is this repository's test.yaml; its provenance artifact (written by the job that runs no module code,
+#     before the module jobs start) names the pull request, head and application; the pull request is open and still
+#     at that head; the application there has that sha256; each architecture's job concluded as its result says; the
+#     result names the application's commit, the current MikoPBX image digest, and the package sha256 that
+#     `prepare` gets by building the ZIP itself. A result that disagrees is not reviewed.
+#   - No review after failed tests (unless forced), and at most N reviews per pull request a day
+#     (config/ai-review.yaml). A report is reused when every input is the same (commit, package, application, rules,
+#     image, agent configuration and policy).
+#   - `review` holds the key, in the protected environment `ai-review` (a required reviewer approves every run; only
+#     the default branch can deploy). It runs on its own VM, never starts MikoPBX, never runs the module, and loads
+#     nothing from it: the source is extracted from a git archive as files, and the model gets three read-only tools
+#     confined to that directory (no shell, no network, no file writes). The source and logs are framed as untrusted
+#     data; the policy says instructions inside them are findings, not instructions; MIKO's code checks every
+#     finding's rule, file, line and quoted evidence, and a report that is not complete, valid JSON is `incomplete`,
+#     which never counts as passed.
+#   - `comment` holds the only write permissions: it posts the rendered report and a commit status on the pull
+#     request's head. A new push, a new application, rules, image or configuration makes the report stale
+#     (tools/ai_review.py current).
+#
+# Never give the key to another job, run anything from the module here, or add a write permission to `prepare` or
+# `review`.
+
+run-name: ${{ inputs.calibrate && 'AI review calibration' || format('AI review of Test run {0}', github.event.workflow_run.id || inputs.run_id) }}
+
+on:
+  workflow_run:
+    workflows: ["Test"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Id of the Test workflow run to review (not needed for calibration)"
+        required: false
+        type: number
+      calibrate:
+        description: "Instead: review every module of config/ai-calibration.yaml and score the results"
+        required: false
+        type: boolean
+        default: false
+      force:
+        description: "Review even though the tests failed (calibration)"
+        required: false
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: ai-review-${{ inputs.calibrate && 'calibration' || github.event.workflow_run.id || inputs.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: (github.event_name == 'workflow_dispatch' && !inputs.calibrate) || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      decision: ${{ steps.prepare.outputs.decision }}
+      reason: ${{ steps.prepare.outputs.reason }}
+      pull_request: ${{ steps.prepare.outputs.pull_request }}
+      head: ${{ steps.prepare.outputs.head }}
+      cache_key: ${{ steps.prepare.outputs.cache_key }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with:
+          persist-credentials: false
+
+      - name: Install PyYAML and jsonschema from Ubuntu
+        run: python3 -c 'import yaml, jsonschema' 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml python3-jsonschema; }
+
+      - name: Check the test run and gather the inputs
+        id: prepare
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+          FORCE: ${{ inputs.force && '--force' || '' }}
+          IMAGE_UPDATE_BOT: ${{ vars.IMAGE_UPDATE_BOT }}
+        run: |
+          set -euo pipefail
+          [[ $RUN_ID =~ ^[0-9]+$ ]] || { echo "::error::Not a run id."; exit 1; }
+          # FORCE is empty or the literal --force.
+          # shellcheck disable=SC2086
+          python3 tools/ai_review.py prepare --repo "$REPO" --run-id "$RUN_ID" --out inputs $FORCE > "$RUNNER_TEMP/decision.json"
+          cat "$RUNNER_TEMP/decision.json"
+          for key in decision reason pull_request head cache_key; do
+            echo "$key=$(jq -r --arg k "$key" '.[$k] // ""' "$RUNNER_TEMP/decision.json" | tr -d '\n' | head -c 300)" >> "$GITHUB_OUTPUT"
+          done
+          decision=$(jq -r .decision "$RUNNER_TEMP/decision.json")
+          echo "AI review: $decision $(jq -r '.reason // ""' "$RUNNER_TEMP/decision.json")" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$decision" != skip ]; then echo "pull_request=$(jq -r .pull_request "$RUNNER_TEMP/decision.json")" > ai-request.txt; fi
+
+      - name: Keep the inputs for the review
+        if: steps.prepare.outputs.decision == 'review' || steps.prepare.outputs.decision == 'cached'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (sha-pinned)
+        with:
+          name: ai-inputs
+          path: inputs/
+          retention-days: 3
+
+      - name: Count this request against the pull request's daily limit
+        if: steps.prepare.outputs.decision == 'review'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (sha-pinned)
+        with:
+          name: ai-request-pr-${{ steps.prepare.outputs.pull_request }}
+          path: ai-request.txt
+          retention-days: 2
+
+  review:
+    needs: prepare
+    if: needs.prepare.outputs.decision == 'review' || needs.prepare.outputs.decision == 'cached'
+    # Pinned: tools/requirements-ai.txt holds wheels for this image's CPython 3.12.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # A required reviewer approves each run; the key exists only in this environment.
+    environment: ai-review
+    permissions:
+      contents: read
+    outputs:
+      passed: ${{ steps.review.outputs.passed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (sha-pinned)
+        with:
+          name: ai-inputs
+          path: inputs
+
+      - name: Install the analyser's dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet --require-hashes -r tools/requirements-ai.txt
+
+      - name: Review
+        id: review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          code=0
+          "$RUNNER_TEMP/venv/bin/python" tools/ai_review.py review --inputs inputs --out report || code=$?
+          echo "passed=$([ "$code" = 0 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          cat report/report.md >> "$GITHUB_STEP_SUMMARY"
+          # The review's verdict is in the report and the commit status; this job fails only if it could not write one.
+          test -s report/report.json
+
+      - name: Keep the report for 30 days (also the cache)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (sha-pinned)
+        with:
+          name: ai-report-${{ needs.prepare.outputs.cache_key }}
+          path: report/
+          retention-days: 30
+
+  comment:
+    needs: [prepare, review]
+    if: always() && needs.prepare.outputs.pull_request != '' && (needs.review.result != 'skipped' || needs.prepare.outputs.decision == 'no_application')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+      statuses: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (sha-pinned)
+        if: needs.review.result == 'success'
+        with:
+          name: ai-report-${{ needs.prepare.outputs.cache_key }}
+          path: report
+
+      - name: Post the report and the status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ needs.prepare.outputs.pull_request }}
+          HEAD_SHA: ${{ needs.prepare.outputs.head }}
+          PASSED: ${{ needs.review.outputs.passed }}
+          DECISION: ${{ needs.prepare.outputs.decision }}
+          REVIEW: ${{ needs.review.result }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [[ $PR =~ ^[0-9]+$ && $HEAD_SHA =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Bad pull request or head."; exit 1; }
+          if [ "$DECISION" = no_application ]; then
+            # Maintenance by the owners or members (checked through the API): a status only, so that branch
+            # protection can require "AI review" on every pull request.
+            jq -n --arg url "$RUN" '{state: "success", context: "AI review", description: "no application in this pull request", target_url: $url}' \
+              | gh api --method POST "repos/$REPO/statuses/$HEAD_SHA" --input - > /dev/null
+            exit 0
+          fi
+          if [ "$REVIEW" = success ] && [ -s report/report.md ]; then
+            body=$(cat report/report.md)
+            if [ "$PASSED" = true ]; then state=success; text="complete, no blockers (a person decides)"; else state=failure; text="blockers found or review incomplete"; fi
+          else
+            body="<!-- module-applications-ai-review -->"$'\n'"The AI review did not finish ($REVIEW): this is not a pass. $RUN"
+            state=error; text="the AI review did not finish"
+          fi
+          existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- module-applications-ai-review -->"))) | .id')
+          existing=${existing%%$'\n'*}
+          if [ -n "$existing" ]; then
+            jq -n --arg body "$body" '{body: $body}' | gh api --method PATCH "repos/$REPO/issues/comments/$existing" --input - > /dev/null
+          else
+            jq -n --arg body "$body" '{body: $body}' | gh api --method POST "repos/$REPO/issues/$PR/comments" --input - > /dev/null
+          fi
+          # On the tested head only: a new push leaves the new head without this status.
+          jq -n --arg state "$state" --arg text "$text" --arg url "$RUN" \
+            '{state: $state, context: "AI review", description: $text, target_url: $url}' \
+            | gh api --method POST "repos/$REPO/statuses/$HEAD_SHA" --input - > /dev/null
+
+  calibrate:
+    # Calibration (M02): the modules and their expected findings come from config/ai-calibration.yaml on the default
+    # branch, not from any pull request; their source is fetched as git objects, as in `prepare`. One approval, one
+    # job, a budget for the whole run.
+    if: github.event_name == 'workflow_dispatch' && inputs.calibrate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    environment: ai-review
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with:
+          persist-credentials: false
+
+      - name: Install the analyser's dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet --require-hashes -r tools/requirements-ai.txt
+
+      - name: Review and score the calibration modules
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" tools/ai_review.py calibrate --out calibration
+          cat calibration/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the reports for 30 days
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (sha-pinned)
+        with:
+          name: ai-calibration
+          path: calibration/
+          if-no-files-found: ignore
+          retention-days: 30

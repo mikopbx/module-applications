@@ -1,0 +1,5 @@
+# well-formed SHA that is not in the repository
+online: true
+problems:
+- rule: APP-007
+  contains: cannot be fetched

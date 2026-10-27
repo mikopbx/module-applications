@@ -1,0 +1,5 @@
+# compatibility range is empty
+online: false
+problems:
+- rule: APP-009
+  contains: max_pbx_version 2024.1.0 is below min_pbx_version 2025.1.0

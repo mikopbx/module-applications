@@ -1,0 +1,5 @@
+# top level is a list
+online: false
+problems:
+- rule: APP-001
+  contains: not a mapping

@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mikopbx/module-applications/schema/ai-report.schema.json",
+  "title": "AI review report, schema version 1",
+  "description": "Written by tools/ai_review.py. Everything except `findings` and `summary` comes from MIKO's code, not from the model. The report never approves anything: `status` says whether the review finished, `outcome` whether it found blockers. A person decides.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "status", "outcome", "module_id", "publisher_id", "repo", "commit", "package_sha256",
+               "application_sha256", "rules_version", "image_digest", "test_run", "agent", "checks_performed",
+               "blockers", "recommendations", "rejected_findings", "summary", "usage", "created_at"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "status": {"enum": ["complete", "incomplete"], "description": "incomplete = timeout, budget, refusal, invalid or truncated answer: never a pass"},
+    "incomplete_reason": {"type": ["string", "null"]},
+    "outcome": {"enum": ["no_blockers", "blockers_found", "not_reviewed"]},
+    "module_id": {"type": "string"},
+    "publisher_id": {"type": ["integer", "null"]},
+    "repo": {"type": "string"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "package_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "test_copy_sha256": {"description": "Paid module only (rule LIFE-007): the ZIP the tests installed, the package with module.json's licence ids set to 0.", "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "application_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "rules_version": {"type": "string"},
+    "image_digest": {"type": "string"},
+    "test_run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "url", "pull_request", "head", "architectures", "test_outcome"],
+      "properties": {
+        "id": {"type": ["integer", "null"]},
+        "url": {"type": ["string", "null"]},
+        "pull_request": {"type": ["integer", "null"]},
+        "head": {"type": ["string", "null"]},
+        "architectures": {"type": "array", "items": {"type": "string"}},
+        "test_outcome": {"type": "string"}
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "model", "answered_by", "effort", "config_hash", "policy_sha256", "cache_key"],
+      "properties": {
+        "provider": {"type": "string"},
+        "model": {"type": "string"},
+        "answered_by": {"type": ["string", "null"], "description": "the model that actually answered (a fallback can differ)"},
+        "effort": {"type": "string"},
+        "config_hash": {"type": "string"},
+        "policy_sha256": {"type": "string"},
+        "cache_key": {"type": "string"},
+        "cached_from_run": {"type": ["integer", "null"]}
+      }
+    },
+    "checks_performed": {"type": "array", "items": {"type": "string"}},
+    "blockers": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
+    "recommendations": {"type": "array", "items": {"$ref": "#/$defs/finding"}},
+    "rejected_findings": {
+      "type": "array",
+      "description": "findings from the model that MIKO's code could not verify (unknown rule, file or line); kept for the reviewer, never counted",
+      "items": {"type": "object"}
+    },
+    "summary": {"type": "string"},
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
+                   "cost_usd_estimate", "cost_is_estimate", "turns", "tool_calls", "duration_seconds"],
+      "properties": {
+        "input_tokens": {"type": "integer"},
+        "output_tokens": {"type": "integer"},
+        "cache_read_input_tokens": {"type": "integer"},
+        "cache_creation_input_tokens": {"type": "integer"},
+        "cost_usd_estimate": {"type": "number"},
+        "cost_is_estimate": {"const": true},
+        "turns": {"type": "integer"},
+        "tool_calls": {"type": "integer"},
+        "duration_seconds": {"type": "number"}
+      }
+    },
+    "created_at": {"type": "string"}
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule", "level", "file", "line", "evidence", "explanation"],
+      "properties": {
+        "rule": {"type": ["string", "null"], "description": "an id from rules/rules.yaml; required for a blocker"},
+        "level": {"enum": ["mandatory", "recommended", null]},
+        "file": {"type": "string"},
+        "line": {"type": "integer", "minimum": 0},
+        "evidence": {"type": "string", "description": "the quoted line(s), checked against the file by MIKO's code"},
+        "explanation": {"type": "string"}
+      }
+    }
+  }
+}

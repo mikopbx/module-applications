@@ -1,0 +1,222 @@
+name: "Test"
+# Installs, enables, disables and uninstalls the module an application pull request adds or changes, in a fresh
+# MikoPBX container on each architecture the application declares, with tools/check. The JSON result is a
+# short-lived artifact (seven days: long enough for the AI review to be approved); the log says which step failed.
+#
+# Threat model. The module is code from anyone, and the application can be edited by anyone who opens a pull request.
+#   - pull_request_target, not pull_request: the workflow file, tools/ and config/ always come from the base branch,
+#     so a pull request cannot edit the checks it is judged by, nor make its own check green. A pull request that
+#     touches anything but one applications/<module_id>/application.yaml fails in `application` before any of its
+#     content is used (tools/validate.py --pr-paths, rule APP-006).
+#   - Nothing from the pull request is checked out. application.yaml is read from git's object store as data and
+#     must pass tools/validate.py before the module's repository is fetched.
+#   - The module's repository is fetched at the exact commit and repacked by tools/check; no script, hook or build
+#     step of the module runs on the runner. Its PHP runs only inside the MikoPBX container, whose image and digest
+#     come from config/mikopbx.yaml on the base branch.
+#   - That container gets no volume, no Docker socket, no environment from the runner, and sits on a Docker network
+#     created with --internal (no route out, no metadata service); an iptables rule drops what it sends to the runner
+#     itself. The probe test module (tests/modules/ModuleAppProbe) shows what a module can reach: nothing.
+#   - The jobs that handle the module have `contents: read` only and no secrets: no Anthropic key, no licence-server
+#     key, no write token, no cache. The runner is a fresh GitHub-hosted VM, destroyed after the job; if a module ever
+#     escaped the container, the VM holds nothing worth taking.
+#   - Output from the module and from MikoPBX can contain anything. While tools/check runs, the runner reads no
+#     workflow commands from the log (::stop-commands:: with a random token).
+#   - The result artifact is evidence for a human and for later stages, not a credential: whoever consumes it (the AI
+#     report, the registration after merge) must check which run and which commit produced it.
+#
+# Never add a secret, a cache, a write permission or a step that runs the module outside the container to this file.
+#
+# To test a pull request by number:
+#   gh workflow run test.yaml -f pr=123
+
+run-name: ${{ github.event.pull_request.title || format('Pull request {0}', inputs.pr) }}
+
+on:
+  # Every pull request, so that `result` can be a required check (branch protection): a maintenance pull request
+  # by the owners or members passes it without testing anything; any other change outside one application fails.
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Number of the pull request to test"
+        required: true
+        type: number
+
+permissions: {}
+
+concurrency:
+  group: test-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+
+jobs:
+  application:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      module_id: ${{ steps.take.outputs.module_id }}
+      head: ${{ steps.take.outputs.head }}
+      application: ${{ steps.validate.outputs.application }}
+      previous: ${{ steps.take.outputs.previous }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with:
+          persist-credentials: false
+
+      - name: Install PyYAML and jsonschema from Ubuntu
+        run: python3 -c 'import yaml, jsonschema' 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml python3-jsonschema; }
+
+      - name: Take applications/<module_id>/application.yaml from the pull request, and nothing else
+        id: take
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          IMAGE_UPDATE_BOT: ${{ vars.IMAGE_UPDATE_BOT }}
+        run: .github/scripts/take_application.sh "$REPO" "$PR"
+
+      - name: Check the application against the rules before anything is installed
+        id: validate
+        if: steps.take.outputs.module_id != ''
+        env:
+          MODULE_ID: ${{ steps.take.outputs.module_id }}
+        run: |
+          resume="$(openssl rand -hex 16)"
+          echo "::stop-commands::$resume"
+          code=0
+          python3 tools/validate.py --online "$MODULE_ID" || code=$?
+          echo "::$resume::"
+          [ "$code" = 0 ] || { echo "::error::applications/$MODULE_ID/ breaks the rules (listed above): nothing is installed."; exit 1; }
+          echo "application=$(base64 -w0 "applications/$MODULE_ID/application.yaml")" >> "$GITHUB_OUTPUT"
+
+      - name: Record which pull request, commit and application this run tests
+        if: steps.take.outputs.module_id != ''
+        env:
+          MODULE_ID: ${{ steps.take.outputs.module_id }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          HEAD_SHA: ${{ steps.take.outputs.head }}
+          PREVIOUS: ${{ steps.take.outputs.previous }}
+          BASE_SHA: ${{ github.sha }}
+        run: |
+          # Written by this job, which runs no code from the module, before the module jobs start. Artifact names are
+          # unique within a run, so a module job cannot replace it. The AI review checks it against the GitHub API.
+          jq -n --arg module_id "$MODULE_ID" --argjson pr "$PR" --arg head "$HEAD_SHA" --arg previous "$PREVIOUS" --arg base "$BASE_SHA" \
+            --arg application_sha256 "$(sha256sum "applications/$MODULE_ID/application.yaml" | cut -d' ' -f1)" \
+            '{module_id: $module_id, pull_request: $pr, head: $head, previous: $previous, base: $base, application_sha256: $application_sha256}' > provenance.json
+          cat provenance.json
+
+      - name: Keep the provenance with the run
+        if: steps.take.outputs.module_id != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (sha-pinned)
+        with:
+          name: provenance
+          path: provenance.json
+          retention-days: 7
+
+      - name: One run per declared architecture
+        id: matrix
+        if: steps.take.outputs.module_id != ''
+        env:
+          MODULE_ID: ${{ steps.take.outputs.module_id }}
+        run: |
+          python3 - "applications/$MODULE_ID/application.yaml" >> "$GITHUB_OUTPUT" <<'EOF'
+          import json, sys, yaml
+          runners = {"x86_64": "ubuntu-latest", "arm64": "ubuntu-24.04-arm"}
+          declared = yaml.safe_load(open(sys.argv[1]))["compatibility"]["architectures"]
+          print("matrix=" + json.dumps({"include": [{"arch": a, "runner": runners[a]} for a in declared]}))
+          EOF
+
+  module:
+    needs: application
+    if: needs.application.outputs.module_id != ''
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.application.outputs.matrix) }}
+    name: module (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    # tools/check allows itself 30 minutes per image.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with:
+          persist-credentials: false
+
+      - name: Install PyYAML and jsonschema from Ubuntu
+        run: python3 -c 'import yaml, jsonschema' 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml python3-jsonschema; }
+
+      - name: Write the validated application
+        env:
+          MODULE_ID: ${{ needs.application.outputs.module_id }}
+          APPLICATION: ${{ needs.application.outputs.application }}
+        run: |
+          set -euo pipefail
+          [[ $MODULE_ID =~ ^Module[A-Za-z0-9]{1,60}$ ]] || { echo "::error::Bad module_id."; exit 1; }
+          rm -rf "applications/$MODULE_ID"
+          mkdir -p "applications/$MODULE_ID"
+          base64 -d <<< "$APPLICATION" > "applications/$MODULE_ID/application.yaml"
+
+      - name: Test the module with tools/check
+        env:
+          MODULE_ID: ${{ needs.application.outputs.module_id }}
+          PREVIOUS: ${{ needs.application.outputs.previous }}
+          HEAD_SHA: ${{ needs.application.outputs.head }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          previous=()
+          [ -z "$PREVIOUS" ] || previous=(--previous-commit "$PREVIOUS")
+          # Until the token is printed again, the runner reads none of the module's or MikoPBX's output as a workflow command.
+          resume="$(openssl rand -hex 16)"
+          echo "::stop-commands::$resume"
+          code=0
+          python3 tools/check "$MODULE_ID" "${previous[@]}" --output "$RUNNER_TEMP/result.json" < /dev/null > /dev/null || code=$?
+          echo "::$resume::"
+          jq --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --arg head "$HEAD_SHA" \
+            '. + {workflow_run: $run, pull_request_head: $head}' "$RUNNER_TEMP/result.json" > result.json || true
+
+          case $code in
+            0) result="passes" ;;
+            1) result="fails (the log says which step)" ;;
+            2) result="breaks the rules (the log lists them)" ;;
+            *) result="could not be checked: tools/check exited $code" ;;
+          esac
+          echo "\`$MODULE_ID\` on $ARCH $result." >> "$GITHUB_STEP_SUMMARY"
+          # A paid module: say what the tests could not check without a licence key (rule LIFE-007).
+          jq -r 'select(.license_required) | "Paid module, **license_required**: \(.license_required)."' result.json >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          [ "$code" = 0 ] || echo "::error::$MODULE_ID on $ARCH $result."
+          exit "$code"
+
+      - name: Keep the result for seven days
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (sha-pinned)
+        with:
+          name: result-${{ needs.application.outputs.module_id }}-${{ matrix.arch }}
+          path: result.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  result:
+    # The one check branch protection requires from this workflow: the application's tests passed on every declared
+    # architecture, or the pull request is maintenance that changes no application. Runs nothing from the module.
+    needs: [application, module]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Every test passed, or there was no application to test
+        env:
+          APPLICATION: ${{ needs.application.result }}
+          MODULE_ID: ${{ needs.application.outputs.module_id }}
+          MODULE: ${{ needs.module.result }}
+        run: |
+          if [ "$APPLICATION" != success ]; then echo "::error::The pull request was not accepted for testing ($APPLICATION)."; exit 1; fi
+          if [ -z "$MODULE_ID" ]; then echo "No application in this pull request: nothing to test."; exit 0; fi
+          if [ "$MODULE" != success ]; then echo "::error::$MODULE_ID did not pass on every architecture ($MODULE)."; exit 1; fi
+          echo "$MODULE_ID passed on every declared architecture."

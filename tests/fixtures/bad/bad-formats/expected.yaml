@@ -1,0 +1,13 @@
+# wrong formats
+online: false
+problems:
+- rule: APP-001
+  contains: repo must be https://github.com/
+- rule: APP-001
+  contains: support_email must be one e-mail
+- rule: APP-001
+  contains: schema_version must be 1
+- rule: APP-001
+  contains: min_pbx_version must be a MikoPBX version
+- rule: APP-001
+  contains: architectures must be

@@ -1,0 +1,7 @@
+# Every change, an application or maintenance, is approved by one of MIKO's reviewers before it merges (the ruleset
+# requires code owner review, docs/setup.md). The author of a pull request cannot approve it, so any other reviewer's
+# approval is enough.
+#
+# TODO(LIC-661): add the other reviewers' GitHub logins on this line (or replace them with a team such as
+# @mikopbx/module-reviewers) when MIKO sends them.
+* @excla1mmm

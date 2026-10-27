@@ -1,0 +1,83 @@
+name: "Publisher agreement"
+# The publisher signs the publisher agreement (PUBLISHER_AGREEMENT.md) by posting a comment with the exact phrase
+# below on the application pull request. Signatures are stored as JSON in the branch publisher-agreement-signatures.
+#
+# Adapted from .github/workflows/cla.yaml in https://github.com/anthropics/oss-scanner (Apache-2.0), which uses the same
+# maintained fork of CLA Assistant. The fork refuses a signature from someone who is not an author or co-author of a
+# commit in the pull request, so nobody can sign for another person.
+#
+# This workflow holds write permissions (it commits signatures and comments) and runs on pull_request_target, so it
+# must never check out or run anything from a pull request: it runs only the sha-pinned action. The text of
+# PUBLISHER_AGREEMENT.md is approved by MIKO; until then it is a draft and signatures are for the pilot only.
+on:
+  issue_comment:
+    types: [created]
+  pull_request_target:
+    types: [opened, closed, reopened, synchronize]
+
+permissions:
+  actions: write
+  checks: read
+  contents: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  agreement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # The agreement is for publishers of applications. A pull request by the repository's owners or members that
+      # changes nothing under applications/ is maintenance (as in terms.yaml and take_application.sh): it needs no
+      # signature. Only the API is read; nothing from the pull request is checked out or run.
+      - name: Maintenance by the owners or members
+        id: scope
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+          ASSOCIATION: ${{ github.event.pull_request.author_association || github.event.issue.author_association }}
+          AUTHOR: ${{ github.event.pull_request.user.login || github.event.issue.user.login }}
+          IMAGE_UPDATE_BOT: ${{ vars.IMAGE_UPDATE_BOT }}
+        run: |
+          maintenance=false
+          # The image update's GitHub App: maintenance only when it changes config/mikopbx.yaml and nothing else.
+          if [ -n "$IMAGE_UPDATE_BOT" ] && [ "$AUTHOR" = "$IMAGE_UPDATE_BOT" ]; then
+            ASSOCIATION=IMAGE_UPDATE
+          fi
+          case "$ASSOCIATION" in
+            IMAGE_UPDATE)
+              if paths=$(gh api --paginate "repos/$REPO/pulls/$NUMBER/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)') \
+                  && [ "$paths" = config/mikopbx.yaml ]; then
+                maintenance=true
+              fi ;;
+            OWNER|MEMBER)
+              if paths=$(gh api --paginate "repos/$REPO/pulls/$NUMBER/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)'); then
+                # The API lists at most 3000 files: a longer list may hide an application, so it is not maintenance.
+                if [ "$(printf '%s\n' "$paths" | grep -c .)" -lt 3000 ] && ! printf '%s\n' "$paths" | grep -q '^applications/'; then
+                  maintenance=true
+                fi
+              else
+                echo "::warning::Cannot list the changed files: the agreement is required."
+              fi ;;
+          esac
+          if [ "$maintenance" = true ]; then
+            echo "A maintenance pull request ($ASSOCIATION, $AUTHOR) that changes no application: no publisher agreement needed."
+          fi
+          echo "maintenance=$maintenance" >> "$GITHUB_OUTPUT"
+
+      - name: "Publisher agreement"
+        if: steps.scope.outputs.maintenance != 'true' && (github.event_name == 'pull_request_target' || contains(github.event.comment.body, 'recheck') || contains(github.event.comment.body, 'I have read the MikoPBX Publisher Agreement and I hereby sign it'))
+        uses: iainmcgin/cla-github-action@0d27e5a16278d4adb6b0c4b92f08ad27b0a21dc8 # v3.2.0 (sha-pinned)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          path-to-document: "https://github.com/${{ github.repository }}/blob/${{ github.event.repository.default_branch }}/PUBLISHER_AGREEMENT.md"
+          path-to-signatures: "signatures/publisher-agreement.json"
+          branch: "publisher-agreement-signatures"
+          custom-pr-sign-comment: "I have read the MikoPBX Publisher Agreement and I hereby sign it"
+          custom-notsigned-prcomment: "Before this application can be reviewed, every author of its commits signs the [MikoPBX Publisher Agreement](https://github.com/${{ github.repository }}/blob/${{ github.event.repository.default_branch }}/PUBLISHER_AGREEMENT.md) by posting a comment with only this line:"
+          custom-allsigned-prcomment: "All authors have signed the MikoPBX Publisher Agreement."
+          # Bots cannot sign. noreply@anthropic.com is the address AI assistants use on Co-authored-by trailers;
+          # allowlisting it drops that synthetic co-author, and the person opening the pull request still signs.
+          allowlist: "dependabot[bot],github-actions[bot],noreply@anthropic.com"

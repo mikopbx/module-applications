@@ -1,0 +1,40 @@
+# Copy to applications/<module_id>/application.yaml and fill in. One application = one directory = one module_id.
+# Schema: schema/application.schema.json. Check it with: python3 tools/validate.py --online <module_id>
+
+schema_version: 1
+
+# moduleUniqueID in module.json at `commit`, and the name of this directory. Module + letters and digits.
+module_id: ModuleExample
+
+# Your id in the MIKO publisher cabinet. It identifies the card the checks compare with; it does not prove who you are.
+publisher_id: 42
+
+name: Example module
+description: What the module does, in a sentence or two.
+
+# Public GitHub repository with the module's source. The checks build exactly `commit` from it.
+repo: https://github.com/vendor/ModuleExample
+
+# The full 40-character SHA of the commit to check and approve. A branch, a tag or a short SHA is rejected.
+# Any change to it starts the checks and the approval again.
+commit: 0123456789abcdef0123456789abcdef01234567
+
+# SPDX license expression.
+license: GPL-3.0-or-later
+
+# Public support address. It must equal support_email in module.json and the address on your publisher card.
+support_email: support@vendor.example
+
+# GitHub logins of the maintainers. Whoever opens the pull request should be one of them.
+maintainers: [vendor-login]
+
+# Optional.
+homepage: https://vendor.example/module-example
+
+compatibility:
+  # Lowest MikoPBX version, at least min_pbx_version in module.json.
+  min_pbx_version: "2024.1.0"
+  # Highest MikoPBX version, or null.
+  max_pbx_version: null
+  # Each architecture gets its own test run: x86_64, arm64.
+  architectures: [x86_64, arm64]

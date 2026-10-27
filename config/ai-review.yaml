@@ -1,0 +1,27 @@
+# Trusted configuration of the AI review (stage 3), owned by MIKO. A pull request cannot change it.
+# Any change here changes `config_hash` in the report, so earlier reports stop being current.
+
+config_version: 1
+
+provider: anthropic              # tools/ai_providers.py; another provider (DeepSeek, Qwen) plugs in there
+model: claude-sonnet-5-5         # owner's choice for the pilot (M02); Opus only if calibration shows the need
+effort: high                     # low | medium | high | xhigh | max; calibration 1 at medium missed a blocker (docs/ai-review.md)
+fallbacks: default               # server-side fallback on a policy refusal; the report names the model that answered
+
+# Limits per run. Hitting one ends the review as `incomplete`, which never counts as passed.
+limits:
+  # From calibration run 2 (six modules, effort high): at most 7 turns, $0.25 and 114 s per module.
+  # The limits leave about three times that.
+  max_turns: 25                  # model requests (each may read several files)
+  max_cost_usd: 0.75             # estimated from the token usage and the prices below
+  timeout_seconds: 600
+  max_output_tokens: 16000       # per request
+  retries: 2                     # the SDK retries 408/409/429/5xx and connection errors this many times
+  max_read_bytes: 3000000        # total source the agent may read in one review
+  max_runs_per_pull_request_per_day: 3
+
+# USD per million tokens, for the estimate in the report (the bill is in the Anthropic Console).
+prices:
+  claude-sonnet-5-5: {input: 2.00, output: 10.00, cache_read: 0.20, cache_write: 2.50}
+  claude-opus-5-5: {input: 4.00, output: 20.00, cache_read: 0.20, cache_write: 5.00}
+  claude-haiku-5-5: {input: 0.10, output: 0.50, cache_read: 0.01, cache_write: 0.125}

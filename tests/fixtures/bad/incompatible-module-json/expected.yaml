@@ -1,0 +1,7 @@
+# application disagrees with module.json at the commit
+online: true
+problems:
+- rule: APP-009
+  contains: below module.json min_pbx_version 2024.1.0
+- rule: APP-010
+  contains: module.json support_email is 'module-applications@example.com'
