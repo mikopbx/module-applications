@@ -35,14 +35,20 @@ echo "head=$head" >> "$GITHUB_OUTPUT"
 # Every changed path, a renamed file under both names, must be inside one applications/<module_id>/.
 gh api "repos/$REPO/pulls/$PR/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)' > "$RUNNER_TEMP/paths"
 
-# A pull request from the repository's owners or organisation members that touches no application is maintenance
+# A pull request from the repository's owners, organisation members or the maintainers listed in the repository
+# variable MAINTAINERS (logins; an organisation member whose membership is private shows as a collaborator) that
+# touches no application is maintenance
 # (tools, rules, workflows, documentation, the image update): there is nothing to take or test. Anyone else, or any
 # pull request that also touches applications/, goes through the rules below.
 # The image update's GitHub App (repository variable IMAGE_UPDATE_BOT, docs/branch-protection.md) counts as maintenance
 # only for a pull request that changes config/mikopbx.yaml and nothing else.
 association=$(jq -r .author_association <<< "$pull")
 author=$(jq -r .user.login <<< "$pull")
-if ! grep -q '^applications/' "$RUNNER_TEMP/paths" && [[ $association == OWNER || $association == MEMBER ]]; then
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+if [[ " $(lower "${MAINTAINERS:-}" | tr ',' ' ') " == *" $(lower "$author") "* ]]; then
+  association=MAINTAINER
+fi
+if ! grep -q '^applications/' "$RUNNER_TEMP/paths" && [[ $association == OWNER || $association == MEMBER || $association == MAINTAINER ]]; then
   echo "A maintenance pull request ($association) that changes no application: nothing to check."
   echo "maintenance=true" >> "$GITHUB_OUTPUT"
   exit 0

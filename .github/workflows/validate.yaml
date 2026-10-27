@@ -63,6 +63,7 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number || inputs.pr }}
           IMAGE_UPDATE_BOT: ${{ vars.IMAGE_UPDATE_BOT }}
+          MAINTAINERS: ${{ vars.MAINTAINERS }}
         run: .github/scripts/take_application.sh "$REPO" "$PR"
 
       - name: Check the application against the rules
