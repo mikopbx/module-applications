@@ -1,0 +1,9 @@
+{
+  "developer": "module-applications pilot",
+  "moduleUniqueID": "ModuleAppBadManifest",
+  "support_email": "module-applications@example.com",
+  "version": "v1",
+  "min_pbx_version": "2019.1.0",
+  "lic_product_id": "42",
+  "lic_feature_id": -1
+}

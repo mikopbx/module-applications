@@ -1,0 +1,5 @@
+# one application per pull request
+online: false
+problems:
+- rule: APP-006
+  contains: more than one application

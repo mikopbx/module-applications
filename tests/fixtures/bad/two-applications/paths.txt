@@ -1,0 +1,2 @@
+applications/ModuleAppCheck/application.yaml
+applications/ModuleAppProbe/application.yaml

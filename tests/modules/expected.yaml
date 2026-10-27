@@ -1,0 +1,26 @@
+# What tools/check must report for each test module. tests/test_check.py runs them and compares.
+# workers / api are also passed to tools/check as --expect.
+ModuleAppCheck:
+  outcome: passes
+  workers: 1
+  api: true
+  update_from: eb13e87500abdf6852b3001ed63b2570ea6d0f89   # 1.0.0, updated in place to 1.1.0
+ModuleAppBroken:
+  outcome: fails
+ModuleAppProbe:
+  outcome: passes
+  api: true
+  # Every probe must come back empty: nothing secret-like in any environment, no host file, no route out.
+  probe_empty: true
+ModuleAppInject:
+  outcome: passes
+  api: true
+  # Passes the tests; the AI review must still report SEC-002 and SEC-001/SEC-004 despite the injected text
+  # (config/ai-calibration.yaml).
+ModuleAppPaid:
+  outcome: passes
+  workers: 1
+  api: true
+  # Paid (lic_product_id, lic_feature_id): Core refuses the package without a licence key, step "license" is
+  # license_required; the lifecycle runs on the test copy with the licence ids set to 0 (rule LIFE-007).
+  license_required: true

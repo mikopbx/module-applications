@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/mikopbx/module-applications/schema/application.schema.json",
+  "title": "MikoPBX module application, schema version 1",
+  "description": "applications/<module_id>/application.yaml. tools/validate.py applies this schema, then the checks that need more than one field, the registry or the repository. Operator-only settings (trust level, price, images, rules, budget) are not part of it: a pull request cannot set them.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "module_id",
+    "publisher_id",
+    "name",
+    "description",
+    "repo",
+    "commit",
+    "license",
+    "support_email",
+    "maintainers",
+    "compatibility"
+  ],
+  "properties": {
+    "schema_version": {
+      "description": "Version of this schema. Only 1 exists.",
+      "const": 1
+    },
+    "module_id": {
+      "description": "moduleUniqueID in module.json at `commit`, and the name of the application's directory. The intersection of what Core installs (^[A-Za-z0-9_-]{1,128}$), what REST v3 can address (^[A-Za-z][A-Za-z0-9]*$) and what the marketplace server allocates (^Module[A-Za-z0-9]{1,60}$).",
+      "type": "string",
+      "pattern": "^Module[A-Za-z0-9]{1,60}$"
+    },
+    "publisher_id": {
+      "description": "The publisher's id in the MIKO publisher cabinet. Not proof of identity: it is checked against the confirmed publisher.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "name": {
+      "description": "Human-readable module name.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "description": {
+      "description": "What the module does, briefly.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+    },
+    "repo": {
+      "description": "The public GitHub repository with the module's source. Required: unlike the optional source_url of the catalogue, it is what the checks build from.",
+      "type": "string",
+      "pattern": "^https://github\\.com/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$"
+    },
+    "commit": {
+      "description": "The full 40-character commit SHA the checks build and MIKO approves. A branch, a tag or a short SHA is not accepted.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "license": {
+      "description": "SPDX license expression, for example GPL-3.0-or-later.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9.+-]*(?: (?:OR|AND|WITH) [A-Za-z0-9][A-Za-z0-9.+-]*)*$",
+      "maxLength": 200
+    },
+    "support_email": {
+      "description": "Public support address. Must equal support_email in module.json and the address on the publisher's card.",
+      "type": "string",
+      "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$",
+      "maxLength": 254
+    },
+    "maintainers": {
+      "description": "GitHub logins of the people who maintain the module.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$"
+      }
+    },
+    "homepage": {
+      "description": "Optional https:// page about the module.",
+      "type": "string",
+      "pattern": "^https://[^\\s#]+$",
+      "maxLength": 500
+    },
+    "compatibility": {
+      "description": "Which MikoPBX versions and architectures the module supports. It selects the test matrix; the images themselves come from MIKO's config/mikopbx.yaml.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min_pbx_version", "architectures"],
+      "properties": {
+        "min_pbx_version": {
+          "description": "Lowest MikoPBX version. Must be at least min_pbx_version in module.json.",
+          "type": "string",
+          "pattern": "^[0-9]{4}\\.[0-9]+\\.[0-9]+$"
+        },
+        "max_pbx_version": {
+          "description": "Highest MikoPBX version, or null. Core does not enforce it; it only narrows the test matrix.",
+          "type": ["string", "null"],
+          "pattern": "^[0-9]{4}\\.[0-9]+\\.[0-9]+$"
+        },
+        "architectures": {
+          "description": "Architectures the module supports; each gets a test run.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"enum": ["x86_64", "arm64"]}
+        }
+      }
+    }
+  }
+}

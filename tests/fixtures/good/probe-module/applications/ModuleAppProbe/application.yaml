@@ -1,0 +1,15 @@
+# Test application. Expected results: tests/modules/expected.yaml.
+schema_version: 1
+module_id: ModuleAppProbe
+publisher_id: 1
+name: Probe module
+description: Test module for the module-applications checks, see tests/modules/ModuleAppProbe/README.md.
+repo: https://github.com/module-applications-test/ModuleAppProbe
+commit: 471c34cdf88c10d695286d83a62cc1aeb4f074a6
+license: GPL-3.0-or-later
+support_email: module-applications@example.com
+maintainers: [module-applications-test]
+compatibility:
+  min_pbx_version: "2024.1.0"
+  max_pbx_version: null
+  architectures: [x86_64, arm64]

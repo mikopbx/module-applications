@@ -1,0 +1,131 @@
+name: "Validate"
+# Checks the application a pull request adds or changes against the rules (tools/validate.py --online) and comments
+# on the pull request with what a reviewer would otherwise look up by hand: the rules, the publisher card, the module's
+# repository and commit, whether whoever opened it maintains the module, the contact, the scope and the checklist.
+# The comment informs the review and decides nothing; this check is red when the application breaks a rule.
+#
+# Adapted from .github/workflows/triage.yaml and build.yaml in https://github.com/anthropics/oss-scanner (Apache-2.0).
+#
+# pull_request_target, not pull_request: a pull request from a fork gets a read-only token, which cannot comment, and
+# with pull_request the pull request could edit this check. So this workflow runs the base branch's code with the base
+# repository's token on input from anyone, and is split in two:
+#   gather   reads the pull request through the GitHub API, as data, with a read-only token. Its checkout is the base
+#            branch, never the pull request. .github/scripts/take_application.sh refuses a pull request that changes
+#            anything but one applications/<module_id>/application.yaml, before reading any of it; the module's
+#            repository is fetched as git objects and nothing from it runs.
+#   comment  holds the only write permission, and does nothing but post the text gather produced.
+# Values from the event reach the scripts through environment variables, never by ${{ }} substitution into them.
+#
+# To comment on a pull request by number (still never runs code from it):
+#   gh workflow run validate.yaml -f pr=123
+
+run-name: ${{ github.event.pull_request.title || format('Pull request {0}', inputs.pr) }}
+
+on:
+  pull_request_target:
+    # edited: the comment reports on the checklist in the description.
+    types: [opened, edited, reopened, synchronize]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Number of the pull request to validate"
+        required: true
+        type: number
+
+permissions: {}
+
+concurrency:
+  group: validate-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+
+jobs:
+  gather:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      comment: ${{ steps.triage.outputs.comment }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with:
+          persist-credentials: false
+
+      - name: Install PyYAML and jsonschema from Ubuntu
+        run: python3 -c 'import yaml, jsonschema' 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml python3-jsonschema; }
+
+      - name: Take applications/<module_id>/application.yaml from the pull request, and nothing else
+        id: take
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          IMAGE_UPDATE_BOT: ${{ vars.IMAGE_UPDATE_BOT }}
+        run: .github/scripts/take_application.sh "$REPO" "$PR"
+
+      - name: Check the application against the rules
+        id: validate
+        if: steps.take.outputs.module_id != ''
+        env:
+          MODULE_ID: ${{ steps.take.outputs.module_id }}
+        run: |
+          resume="$(openssl rand -hex 16)"
+          echo "::stop-commands::$resume"
+          code=0
+          python3 tools/validate.py --online "$MODULE_ID" || code=$?
+          python3 tools/validate.py --online --json "$MODULE_ID" > "$RUNNER_TEMP/validation.json" 2>/dev/null || true
+          echo "::$resume::"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+
+      - name: Write the comment
+        id: triage
+        # Also when the pull request reaches outside its directory: the comment then says so.
+        if: always() && steps.take.outputs.head != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+        run: |
+          # A random delimiter, so that no text in the comment can end the output early.
+          delimiter="triage-$(openssl rand -hex 16)"
+          {
+            echo "comment<<$delimiter"
+            python3 .github/scripts/triage.py --repo "$REPO" --pr "$PR" --validation "$RUNNER_TEMP/validation.json"
+            echo "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: The application follows the rules
+        if: steps.take.outputs.module_id != ''
+        env:
+          CODE: ${{ steps.validate.outputs.code }}
+          MODULE_ID: ${{ steps.take.outputs.module_id }}
+        run: |
+          if [ "$CODE" != 0 ]; then echo "::error::applications/$MODULE_ID/ breaks the rules (the log of the step above lists them)."; exit 1; fi
+          echo "applications/$MODULE_ID/ follows the rules."
+
+  comment:
+    needs: gather
+    if: always() && needs.gather.outputs.comment != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Post the comment, or update the one already there
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          COMMENT: ${{ needs.gather.outputs.comment }}
+        run: |
+          # The agreement workflow also comments as github-actions[bot]; ours is the one that starts with the marker.
+          existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- module-applications-triage -->"))) | .id')
+          existing=${existing%%$'\n'*}
+          if [ -n "$existing" ]; then
+            jq -n --arg body "$COMMENT" '{body: $body}' | gh api --method PATCH "repos/$REPO/issues/comments/$existing" --input - > /dev/null
+          else
+            jq -n --arg body "$COMMENT" '{body: $body}' | gh api --method POST "repos/$REPO/issues/$PR/comments" --input - > /dev/null
+          fi

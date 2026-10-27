@@ -1,0 +1,9 @@
+# required fields left out
+online: false
+problems:
+- rule: APP-001
+  contains: missing commit
+- rule: APP-001
+  contains: missing support_email
+- rule: APP-001
+  contains: missing compatibility.min_pbx_version

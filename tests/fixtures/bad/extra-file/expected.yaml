@@ -1,0 +1,5 @@
+# a file beside application.yaml
+online: false
+problems:
+- rule: APP-003
+  contains: only application.yaml may sit

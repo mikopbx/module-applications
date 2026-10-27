@@ -1,0 +1,7 @@
+{
+  "developer": "Example Vendor",
+  "moduleUniqueID": "ModuleExample",
+  "support_email": "support@vendor.example",
+  "version": "1.0.0",
+  "min_pbx_version": "2024.1.0"
+}

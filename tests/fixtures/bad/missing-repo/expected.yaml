@@ -1,0 +1,5 @@
+# repository does not exist
+online: true
+problems:
+- rule: APP-007
+  contains: cannot be fetched

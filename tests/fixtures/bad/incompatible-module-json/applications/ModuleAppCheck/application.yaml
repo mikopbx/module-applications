@@ -1,0 +1,16 @@
+schema_version: 1
+module_id: ModuleAppCheck
+publisher_id: 1
+name: Application check
+description: Control module for the module-applications checks. Installs, runs one
+  worker, answers its API, uninstalls cleanly.
+repo: https://github.com/module-applications-test/ModuleAppCheck
+commit: 1a4dfa6326c83d1ebcb40838ed7c0aebc24bbcda
+license: GPL-3.0-or-later
+support_email: other@example.com
+maintainers:
+- module-applications-test
+compatibility:
+  min_pbx_version: 2023.1.0
+  architectures:
+  - x86_64

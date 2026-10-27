@@ -1,0 +1,5 @@
+# a branch name
+online: false
+problems:
+- rule: APP-004
+  contains: full 40-character

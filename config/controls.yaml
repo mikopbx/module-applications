@@ -1,0 +1,5 @@
+# Where the control modules (tests/modules/) are published, for runs that need them from GitHub rather than from
+# local repositories: the image update (.github/workflows/image-update.yaml) and the AI calibration. They are branches
+# test-modules/<Name> of this repository (`python3 tests/module_repos.py DIR --push URL`); the commits are those
+# tests/module_repos.py builds, so their SHAs equal the ones in the test applications. A commit is fetched by SHA.
+repository: https://github.com/mikopbx/module-applications

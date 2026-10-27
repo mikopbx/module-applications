@@ -1,0 +1,201 @@
+name: "Image update"
+# Keeps the pinned MikoPBX image (config/mikopbx.yaml) current, like Dependabot: once a day, look where
+# mikopbx/mikopbx:latest points; if its digest moved, run the control modules on the new image on x86_64 and arm64, then
+# open (or update) a pull request that changes only config/mikopbx.yaml. The new image becomes the reference only
+# when a person merges that pull request, and the pull request says whether the control modules behaved.
+#
+# Why the control modules run here and not on the pull request: a pull request opened with GITHUB_TOKEN does not start
+# other workflows (GitHub's rule against loops), so nothing would test it. Running them first, in this run, and linking
+# the run from the pull request keeps one trusted run as the evidence for the change.
+#
+# Threat model. This workflow runs only code from the default branch, on a schedule or by hand; it reads nothing from
+# any pull request. Registry answers are data: tools/image_update.py accepts only sha256 digests and a version
+# YYYY.N.N. The control modules are ours (tests/modules, published in config/controls.yaml's repository and pinned by
+# SHA in the test applications), and run through tools/check with the same isolation as applications. Only the `pr`
+# job can write, and it runs nothing but git and gh on files this workflow wrote; it uses the built-in GITHUB_TOKEN and
+# no other secret. It needs "Allow GitHub Actions to create and approve pull requests" in the repository settings.
+#
+# A new image changes the test environment: test results and approvals obtained on the old digest are stale, just as
+# after a new commit (README, CONTRIBUTING).
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  # By hand: the pull request goes to the branch the run starts on (the default branch, or a test branch whose
+  # config/mikopbx.yaml pins an older image).
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: image-update
+  cancel-in-progress: false
+
+jobs:
+  look:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      behind: ${{ steps.look.outputs.behind }}
+      version: ${{ steps.look.outputs.version }}
+      pinned: ${{ steps.look.outputs.pinned }}
+      digest: ${{ steps.look.outputs.digest }}
+      config: ${{ steps.look.outputs.config }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with:
+          persist-credentials: false
+
+      - name: Install PyYAML from Ubuntu
+        run: python3 -c 'import yaml' 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml; }
+
+      - name: Where does latest point?
+        id: look
+        run: |
+          set -euo pipefail
+          python3 tools/image_update.py --write --json > "$RUNNER_TEMP/look.json"
+          cat "$RUNNER_TEMP/look.json"
+          {
+            echo "behind=$(jq -r .behind "$RUNNER_TEMP/look.json")"
+            echo "version=$(jq -r .latest.version "$RUNNER_TEMP/look.json")"
+            echo "pinned=$(jq -r .pinned.version "$RUNNER_TEMP/look.json")"
+            echo "digest=$(jq -r .latest.digest "$RUNNER_TEMP/look.json")"
+            echo "config=$(base64 -w0 config/mikopbx.yaml)"
+          } >> "$GITHUB_OUTPUT"
+
+  controls:
+    needs: look
+    if: needs.look.outputs.behind == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    name: control modules (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with:
+          persist-credentials: false
+
+      - name: Install PyYAML and jsonschema from Ubuntu
+        run: python3 -c 'import yaml, jsonschema' 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml python3-jsonschema; }
+
+      - name: Run the control modules on the new image
+        env:
+          CONFIG: ${{ needs.look.outputs.config }}
+        run: |
+          base64 -d <<< "$CONFIG" > "$RUNNER_TEMP/mikopbx.yaml"
+          remote=$(python3 -c 'import yaml; print(yaml.safe_load(open("config/controls.yaml"))["repository"])')
+          resume="$(openssl rand -hex 16)"
+          echo "::stop-commands::$resume"
+          code=0
+          python3 tools/check_controls.py --config "$RUNNER_TEMP/mikopbx.yaml" --remote "$remote" --output controls.json || code=$?
+          echo "::$resume::"
+          exit "$code"
+
+      - name: Keep the result for three days
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (sha-pinned)
+        with:
+          name: controls-${{ matrix.arch }}
+          path: controls.json
+          if-no-files-found: ignore
+          retention-days: 3
+
+  pr:
+    needs: [look, controls]
+    if: always() && needs.look.outputs.behind == 'true' && (needs.controls.result == 'success' || needs.controls.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # The App's private key lives only in this environment (docs/branch-protection.md, "The image update pull request").
+    environment: image-update
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # Option B: with the image update's GitHub App configured (variable IMAGE_UPDATE_APP_ID, secret
+      # IMAGE_UPDATE_APP_PRIVATE_KEY in the environment image-update, variable IMAGE_UPDATE_BOT = its bot login), the
+      # branch is pushed and the pull request opened with the App's token, so the required checks run on it as on any
+      # pull request. Without it GITHUB_TOKEN is used and the pull request starts no checks (merge by hand, audited).
+      - name: Token of the image update's GitHub App
+        id: app
+        if: vars.IMAGE_UPDATE_APP_ID != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0 (sha-pinned)
+        with:
+          app-id: ${{ vars.IMAGE_UPDATE_APP_ID }}
+          private-key: ${{ secrets.IMAGE_UPDATE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with:
+          token: ${{ steps.app.outputs.token || github.token }}
+
+      - name: Open or update the pull request
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token || github.token }}
+          WITH_APP: ${{ steps.app.outputs.token != '' }}
+          REPO: ${{ github.repository }}
+          CONFIG: ${{ needs.look.outputs.config }}
+          VERSION: ${{ needs.look.outputs.version }}
+          PINNED: ${{ needs.look.outputs.pinned }}
+          DIGEST: ${{ needs.look.outputs.digest }}
+          CONTROLS: ${{ needs.controls.result }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BASE_BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ $VERSION =~ ^[0-9]{4}\.[0-9]+\.[0-9]+$ && $DIGEST =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::Unexpected version or digest."; exit 1; }
+          branch="image-update/mikopbx-$BASE_BRANCH"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          base64 -d <<< "$CONFIG" > config/mikopbx.yaml
+          git add config/mikopbx.yaml
+          if git diff --cached --quiet; then
+            echo "$BASE_BRANCH already pins $DIGEST: nothing to propose."
+            exit 0
+          fi
+          git commit -m "MikoPBX image $PINNED -> $VERSION ($DIGEST)"
+          git push --force origin "$branch"
+
+          if [ "$CONTROLS" = success ]; then
+            verdict="The control modules behaved as expected on x86_64 and arm64: ModuleAppCheck passes (with the update from 1.0.0), ModuleAppBroken fails, ModuleAppProbe reaches nothing."
+            title="MikoPBX image $VERSION"
+          else
+            verdict="**The control modules did NOT behave as expected** on at least one architecture. Do not merge until that is understood: see the run."
+            title="[controls failed] MikoPBX image $VERSION"
+          fi
+          body=$(cat <<EOF
+          The pinned MikoPBX image moves from **$PINNED** to **$VERSION** (\`mikopbx/mikopbx@$DIGEST\`). Release: https://github.com/mikopbx/Core/releases/tag/$VERSION
+
+          $verdict
+
+          Run with the control modules' results (artifacts \`controls-x86_64\`, \`controls-arm64\`): $RUN
+
+          Merging this changes the test environment: test results and approvals of open applications obtained on the old digest become stale and must be run again.
+
+          This pull request only changes \`config/mikopbx.yaml\`. It was opened by .github/workflows/image-update.yaml, and the control modules ran in that run, before it was opened.
+          EOF
+          )
+          if [ "$WITH_APP" = true ]; then
+            body="$body"$'\n\n'"Opened by the image update's GitHub App: the required checks run on it like on any pull request (maintenance: no application)."
+          else
+            body="$body"$'\n\n'"Opened with GITHUB_TOKEN, so no other workflow runs on it and the ruleset blocks it: an admin merges it by setting the ruleset to Disabled for the merge (audited), or configure the App (docs/branch-protection.md)."
+          fi
+          existing=$(gh pr list --repo "$REPO" --head "$branch" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --repo "$REPO" --title "$title" --body "$body"
+          else
+            gh pr create --repo "$REPO" --head "$branch" --base "$BASE_BRANCH" --title "$title" --body "$body" \
+              || { echo "::error::Could not open the pull request. Is 'Allow GitHub Actions to create and approve pull requests' on? The branch $branch is pushed."; exit 1; }
+          fi

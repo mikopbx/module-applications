@@ -1,0 +1,5 @@
+# subdirectories are not part of an application
+online: false
+problems:
+- rule: APP-006
+  contains: 'outside applications/<module_id>/: applications/ModuleAppCheck/sub/x.yaml'

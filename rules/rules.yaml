@@ -1,0 +1,252 @@
+# Requirements a module application is checked against. Each has a stable id that the checks print next to a
+# problem, so a report can point to the rule it breaks. Ids are never reused; a withdrawn rule stays with
+# status: withdrawn.
+#
+#   level     mandatory    the application is blocked until it is fixed (MikoPBX contract, security, the format)
+#             recommended  reported, does not block
+#   check     validate     tools/validate.py (no code from the module runs)
+#             test         tools/check (the module runs inside a throw-away MikoPBX container)
+#             review       the AI report or the human reviewer (stage 3)
+#   status    accepted     backed by Core code or by the format of this repository
+#             draft        evidence is weak or the rule is a proposal: to be confirmed in LIC-319
+#
+# Evidence: Core = mikopbx/Core develop @ e7e2109 (2026-10-27), paths under src/. Template = mikopbx/ModuleTemplate
+# @ e056e8b. Spec = Core branch docs/third-party-modules-spec, docs/superpowers/specs/2026-09-21-third-party-modules-design.md.
+
+rules_version: "0.3.0"
+
+rules:
+  # --- The application (applications/<module_id>/application.yaml) ---------------------------------------------
+  - id: APP-001
+    level: mandatory
+    check: validate
+    status: accepted
+    statement: application.yaml follows schema/application.schema.json (required fields, types, formats, no unknown keys).
+  - id: APP-002
+    level: mandatory
+    check: validate
+    status: accepted
+    statement: Fields set by MIKO operators (trust level, price, images, rules, budget, approval) are not in the application.
+  - id: APP-003
+    level: mandatory
+    check: validate
+    status: accepted
+    statement: The directory is named after module_id and holds application.yaml only, as a regular file of at most 64 KiB.
+  - id: APP-004
+    level: mandatory
+    check: validate
+    status: accepted
+    statement: commit is a full 40-hex SHA; a branch, a tag or a short SHA does not pin the code.
+  - id: APP-005
+    level: mandatory
+    check: validate
+    status: accepted
+    statement: module_id is not used by another application in applications/ (compared without regard to case).
+  - id: APP-006
+    level: mandatory
+    check: validate
+    status: accepted
+    statement: A pull request changes files inside one applications/<module_id>/ and nothing else.
+  - id: APP-007
+    level: mandatory
+    check: validate
+    status: accepted
+    statement: commit exists in repo and can be fetched anonymously.
+  - id: APP-008
+    level: mandatory
+    check: validate
+    status: accepted
+    statement: module.json at commit has moduleUniqueID equal to module_id.
+  - id: APP-009
+    level: mandatory
+    check: validate
+    status: accepted
+    statement: compatibility.min_pbx_version is at least min_pbx_version in module.json, and max_pbx_version (if set) is not below it.
+  - id: APP-010
+    level: mandatory
+    check: validate
+    status: accepted
+    statement: support_email equals support_email in module.json (ignoring case).
+  - id: APP-011
+    level: mandatory
+    check: validate
+    status: draft
+    statement: support_email equals the support address on the confirmed publisher's card, and module_id is free or already the publisher's on the licence server. Needs the server API (LIC-613); until then the check reports "not checked".
+  - id: APP-012
+    level: recommended
+    check: validate
+    status: draft
+    statement: Whoever opens the pull request is listed in maintainers and has write access to repo.
+
+  # --- The package (the ZIP built from commit) -----------------------------------------------------------------
+  - id: PKG-001
+    level: mandatory
+    check: validate
+    status: accepted
+    statement: module.json is at the repository root, so it is at the root of the ZIP.
+    evidence: Core PBXCoreREST/Lib/Modules/GetMetadataFromModulePackageAction.php:73-81
+  - id: PKG-002
+    level: mandatory
+    check: validate
+    status: accepted
+    statement: No path contains "..", starts with "/" or contains "\"; no symbolic links.
+    evidence: Core PBXCoreREST/Lib/Modules/Pipeline/ModuleArchiveExtractor.php:100-126
+  - id: PKG-003
+    level: mandatory
+    check: validate
+    status: accepted
+    statement: Setup/PbxExtensionSetup.php exists (exact case).
+    evidence: Core PBXCoreREST/Lib/Modules/Pipeline/InstallPipeline.php:329-335
+  - id: PKG-004
+    level: mandatory
+    check: validate
+    status: draft
+    statement: The ZIP is at most 100 MB, at most 500 MB unpacked, with at most 20 000 entries.
+    evidence: Spec, zip_limits (the marketplace server; Core itself has no limit)
+  - id: PKG-005
+    level: recommended
+    check: validate
+    status: draft
+    statement: The package carries no settings database (db/*.db) and no development files (.env, node_modules/, .idea/).
+    evidence: Core PBXCoreREST/Lib/Modules/Pipeline/InstallPipeline.php:381-390
+
+  # --- module.json ---------------------------------------------------------------------------------------------
+  - id: MJ-001
+    level: mandatory
+    check: validate
+    status: accepted
+    statement: module.json is valid JSON (no BOM, comments or trailing commas) and an object.
+    evidence: Core PBXCoreREST/Lib/Modules/GetMetadataFromModulePackageAction.php:84-92
+  - id: MJ-002
+    level: mandatory
+    check: validate
+    status: accepted
+    statement: moduleUniqueID matches ^Module[A-Za-z0-9]{1,60}$ (installable by Core, addressable by REST v3, allocatable by the marketplace).
+    evidence: Core PBXCoreREST/Lib/Modules/DataStructure.php:40; PBXCoreREST/Controllers/Modules/RestController.php:67; Spec guid_charset
+  - id: MJ-003
+    level: mandatory
+    check: validate
+    status: accepted
+    statement: min_pbx_version is a numeric version (YYYY.N.N) and at least 2020.2.468; otherwise Core disables the module at the next upgrade.
+    evidence: Core Modules/PbxExtensionUtils.php:233-260; Common/Models/ModelsBase.php:77
+  - id: MJ-004
+    level: mandatory
+    check: validate
+    status: draft
+    statement: version is a numeric dotted version (for example 1.2.3) or the placeholder %ModuleVersion%, which the build replaces. Core stores it as is; the marketplace requires it to grow.
+    evidence: Core Modules/Setup/PbxExtensionSetupBase.php:162,517; Spec version_mismatch
+  - id: MJ-005
+    level: mandatory
+    check: validate
+    status: accepted
+    statement: lic_product_id and lic_feature_id are absent or whole numbers ≥ 0. 0 (or absent) is a free module; a positive id is a paid module licensed by MIKO. Both are accepted; whether a paid module is published is MIKO's decision (the verified publisher agreement), outside the pull request.
+    evidence: Core (image 2026.6.34) Modules/Setup/PbxExtensionSetupBase.php:168-179,276-287; Modules/PbxExtensionState.php:103-108,156-177
+  - id: MJ-006
+    level: recommended
+    check: validate
+    status: accepted
+    statement: developer is a non-empty string and support_email a valid address.
+    evidence: Core Modules/Setup/PbxExtensionSetupBase.php:164-165
+
+  # --- Code layout ---------------------------------------------------------------------------------------------
+  - id: CODE-001
+    level: mandatory
+    check: validate
+    status: accepted
+    statement: Setup/PbxExtensionSetup.php declares namespace Modules\<module_id>\Setup and class PbxExtensionSetup.
+    evidence: Core PBXCoreREST/Workers/WorkerModuleStateRunner.php:180-197
+  - id: CODE-002
+    level: mandatory
+    check: review
+    status: accepted
+    statement: Every PHP namespace starts with Modules\<module_id>\ (case-sensitive) and matches the file's path; the Conf class (Modules\<module_id>\Lib) and the models (Modules\<module_id>\Models) have exactly these three parts. Deeper namespaces elsewhere (App\Controllers, Lib\RestAPI\...) are fine.
+    evidence: Core Common/Config/ClassLoader.php:54-56; Modules/Config/ConfigClass.php:105-110
+  - id: CODE-003
+    level: mandatory
+    check: test
+    status: accepted
+    statement: The Conf class, if any, is Lib/<X>Conf.php extending ConfigClass, X being module_id without "Module", and loads on the current Core (a fatal error disables the module at boot).
+    evidence: Core Common/Providers/PBXConfModulesProvider.php:57-62; Modules/PbxExtensionUtils.php:412-510
+  - id: CODE-004
+    level: recommended
+    check: validate
+    status: accepted
+    statement: Setup implements uninstallModule(bool $keepSettings), itself or by extending PbxExtensionSetupBase (which does).
+    evidence: Core PBXCoreREST/Lib/Modules/UninstallModuleAction.php:162-176
+  - id: CODE-005
+    level: recommended
+    check: review
+    status: draft
+    statement: agi-bin files carry the module id in their names (they are linked into a shared directory and can replace others).
+    evidence: Core Modules/PbxExtensionUtils.php:175-195
+  - id: CODE-006
+    level: recommended
+    check: review
+    status: withdrawn
+    statement: Replaced by SEC-001 (rules 0.2.0), which makes it mandatory.
+
+  # --- Security (read by the AI review and the human reviewer) -------------------------------------------------
+  - id: SEC-001
+    level: mandatory
+    check: review
+    status: draft
+    statement: No secrets, tokens, passwords or private keys in the source.
+  - id: SEC-002
+    level: mandatory
+    check: review
+    status: draft
+    statement: No shell command, SQL statement, file path or URL built from external input (HTTP, AMI, AGI, database) without escaping or validation.
+  - id: SEC-003
+    level: mandatory
+    check: review
+    status: draft
+    statement: No code downloaded and run at run time, no obfuscated code (eval of decoded or packed strings), no behaviour that changes when a test environment is detected.
+  - id: SEC-004
+    level: mandatory
+    check: review
+    status: draft
+    statement: Every outgoing network connection is what the module is for and is described in its README; no hidden telemetry or data sent elsewhere.
+  - id: SEC-005
+    level: mandatory
+    check: review
+    status: draft
+    statement: The module writes only inside its own directory and its own database; it does not change system files, users, SSH keys, the firewall or other modules.
+
+  # --- Lifecycle in MikoPBX (tools/check) ----------------------------------------------------------------------
+  - id: LIFE-001
+    level: mandatory
+    check: test
+    status: accepted
+    statement: The ZIP installs through the REST API (installFromPackage) within 120 s and the module is registered, disabled.
+    evidence: Core Modules/Setup/PbxExtensionSetupBase.php:204-235; PBXCoreREST/Lib/Modules/Pipeline/InstallPipeline.php:465
+  - id: LIFE-002
+    level: mandatory
+    check: test
+    status: accepted
+    statement: The module enables; its workers (if any) start and its REST callback (if any) answers.
+  - id: LIFE-003
+    level: mandatory
+    check: test
+    status: accepted
+    statement: No PHP fatal error or uncaught exception from the module's code in the logs during the run.
+  - id: LIFE-004
+    level: mandatory
+    check: test
+    status: accepted
+    statement: The module disables (its workers stop) and uninstalls (its row and directory are gone).
+  - id: LIFE-005
+    level: mandatory
+    check: test
+    status: accepted
+    statement: MikoPBX answers system:ping and Asterisk runs after the module is removed.
+  - id: LIFE-006
+    level: mandatory
+    check: test
+    status: draft
+    statement: The previous approved commit, if any, installs and is updated in place to commit, keeping the module enabled.
+  - id: LIFE-007
+    level: mandatory
+    check: test
+    status: accepted
+    statement: A paid module (lic_product_id or lic_feature_id > 0) is refused by Core without a licence key only for the licence (on install "The license key to activate the license for the module has not been installed", on enable DisabledByLicense). LIFE-001..006 then run on a test copy whose module.json has lic_product_id and lic_feature_id set to 0; licence activation and whatever the module does only with a licence are reported as license_required, never as a pass. No licence key is used in the tests.
+    evidence: Core (image 2026.6.34) Modules/Setup/PbxExtensionSetupBase.php:204-213,276-287; Modules/PbxExtensionState.php:154-177; Common/Messages/en/Modules.php:43

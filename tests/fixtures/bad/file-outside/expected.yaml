@@ -1,0 +1,7 @@
+# a pull request that also edits a workflow and the validator
+online: false
+problems:
+- rule: APP-006
+  contains: 'outside applications/<module_id>/: .github/workflows/test.yaml'
+- rule: APP-006
+  contains: 'outside applications/<module_id>/: tools/validate.py'
