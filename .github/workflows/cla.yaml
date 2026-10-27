@@ -39,12 +39,18 @@ jobs:
           ASSOCIATION: ${{ github.event.pull_request.author_association || github.event.issue.author_association }}
           AUTHOR: ${{ github.event.pull_request.user.login || github.event.issue.user.login }}
           IMAGE_UPDATE_BOT: ${{ vars.IMAGE_UPDATE_BOT }}
+          MAINTAINERS: ${{ vars.MAINTAINERS }}
         run: |
           maintenance=false
           # The image update's GitHub App: maintenance only when it changes config/mikopbx.yaml and nothing else.
           if [ -n "$IMAGE_UPDATE_BOT" ] && [ "$AUTHOR" = "$IMAGE_UPDATE_BOT" ]; then
             ASSOCIATION=IMAGE_UPDATE
           fi
+          # MAINTAINERS (repository variable, logins): MIKO's people whose organisation membership is private.
+          lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+          case " $(lower "${MAINTAINERS:-}" | tr ',' ' ') " in
+            *" $(lower "$AUTHOR") "*) [ "$ASSOCIATION" = IMAGE_UPDATE ] || ASSOCIATION=MEMBER ;;
+          esac
           case "$ASSOCIATION" in
             IMAGE_UPDATE)
               if paths=$(gh api --paginate "repos/$REPO/pulls/$NUMBER/files?per_page=100" --jq '.[] | .filename, (.previous_filename // empty)') \

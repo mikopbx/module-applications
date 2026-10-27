@@ -91,6 +91,7 @@ jobs:
           RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
           FORCE: ${{ inputs.force && '--force' || '' }}
           IMAGE_UPDATE_BOT: ${{ vars.IMAGE_UPDATE_BOT }}
+          MAINTAINERS: ${{ vars.MAINTAINERS }}
         run: |
           set -euo pipefail
           [[ $RUN_ID =~ ^[0-9]+$ ]] || { echo "::error::Not a run id."; exit 1; }

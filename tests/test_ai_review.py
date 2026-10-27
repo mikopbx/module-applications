@@ -468,6 +468,21 @@ def test_prepare_reports_a_maintenance_pull_request_checked_through_the_api(tmp_
         ai_review.prepare(github, 7, tmp_path / "in")
 
 
+def test_prepare_treats_listed_maintainers_as_maintenance(tmp_path, package_sha, monkeypatch):
+    github = FakeGitHub(package_sha, run={**FakeGitHub(package_sha).run, "pull_requests": [{"number": 1, "head": {"sha": "b" * 40}}]})
+    del github.files["provenance"]
+    github.pull = {"state": "open", "head": {"sha": "b" * 40}, "author_association": "COLLABORATOR", "changed_files": 1,
+                   "user": {"login": "Reviewer"}}
+    original = github.get
+    github.get = lambda path, accept=None: [{"filename": "tools/validate.py"}] if path.startswith("pulls/1/files") else original(path, accept)
+    monkeypatch.delenv("MAINTAINERS", raising=False)
+    with pytest.raises(ai_review.Skip, match="no provenance"):
+        ai_review.prepare(github, 7, tmp_path / "in")
+    monkeypatch.setenv("MAINTAINERS", "other, reviewer")
+    with pytest.raises(ai_review.NoApplication):
+        ai_review.prepare(github, 7, tmp_path / "in")
+
+
 def test_prepare_treats_the_image_update_app_as_maintenance_only_for_the_image_pin(tmp_path, package_sha, monkeypatch):
     github = FakeGitHub(package_sha, run={**FakeGitHub(package_sha).run, "pull_requests": [{"number": 1, "head": {"sha": "b" * 40}}]})
     del github.files["provenance"]

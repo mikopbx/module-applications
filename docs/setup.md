@@ -39,6 +39,7 @@ Repository variables (Settings → Secrets and variables → Actions → Variabl
 |---|---|
 | `IMAGE_UPDATE_APP_ID` | the App id of the image update App (option B) |
 | `IMAGE_UPDATE_BOT` | its bot login, `<app-slug>[bot]` |
+| `MAINTAINERS` | MIKO's people who maintain this repository, GitHub logins separated by spaces (the same as CODEOWNERS). Their pull requests that change no application are maintenance: no terms box, no agreement, nothing to test or review. Needed because an organisation member whose membership is private shows as a collaborator, not a member. |
 
 ## 4. The image update App (option B)
 

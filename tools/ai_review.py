@@ -454,8 +454,8 @@ class NoApplication(Exception):
 
 
 def maintenance(github, run):
-    """Raise NoApplication if the test run was for an owners' or members' pull request touching no application, or for
-    the image update's App (IMAGE_UPDATE_BOT) changing config/mikopbx.yaml only.
+    """Raise NoApplication if the test run was for an owners', members' or MAINTAINERS' pull request touching no
+    application, or for the image update's App (IMAGE_UPDATE_BOT) changing config/mikopbx.yaml only.
 
     Checked through the API (the pull request's author, head and files), not inferred from a missing artifact."""
     for listed in run.get("pull_requests") or []:
@@ -467,7 +467,9 @@ def maintenance(github, run):
         if bot and pull.get("user", {}).get("login") == bot and [f["filename"] for f in files] == ["config/mikopbx.yaml"] \
                 and not any(f.get("previous_filename") for f in files):
             raise NoApplication(listed["number"], pull["head"]["sha"])
-        if pull.get("author_association") not in ("OWNER", "MEMBER"):
+        maintainers = {login.lower() for login in os.environ.get("MAINTAINERS", "").replace(",", " ").split()}
+        if pull.get("author_association") not in ("OWNER", "MEMBER") \
+                and str(pull.get("user", {}).get("login", "")).lower() not in maintainers:
             continue
         if pull.get("changed_files", 0) <= 100 and not any(
                 f["filename"].startswith("applications/") or str(f.get("previous_filename", "")).startswith("applications/") for f in files):

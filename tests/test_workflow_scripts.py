@@ -59,7 +59,7 @@ def repository(tmp_path):
     return base, pull_request
 
 
-def run_take(base, tmp_path, head, paths, association="NONE", author="someone", bot=""):
+def run_take(base, tmp_path, head, paths, association="NONE", author="someone", bot="", maintainers=""):
     """Run take_application.sh in `base` with a fake gh that serves this pull request."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -77,7 +77,7 @@ esac
     output.write_text("")
     runner_temp = tmp_path / "runner"
     runner_temp.mkdir(exist_ok=True)
-    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "GITHUB_OUTPUT": str(output), "RUNNER_TEMP": str(runner_temp), "IMAGE_UPDATE_BOT": bot}
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "GITHUB_OUTPUT": str(output), "RUNNER_TEMP": str(runner_temp), "IMAGE_UPDATE_BOT": bot, "MAINTAINERS": maintainers}
     done = subprocess.run([str(base / ".github" / "scripts" / "take_application.sh"), "owner/repo", "1"], cwd=base, capture_output=True, text=True, env=env)
     values = dict(line.split("=", 1) for line in output.read_text().splitlines() if "=" in line)
     return done, values
@@ -146,6 +146,20 @@ def test_take_application_lets_owners_maintain_without_an_application(repository
     done, values = run_take(base, tmp_path, head, paths, association="OWNER")
     assert done.returncode == 0 and "maintenance pull request (OWNER)" in done.stdout
     assert values.get("maintenance") == "true" and "module_id" not in values
+
+
+def test_take_application_lets_listed_maintainers_maintain(repository, tmp_path):
+    """A MIKO person whose organisation membership is private shows as COLLABORATOR; MAINTAINERS names them."""
+    base, pull_request = repository
+    head, paths = pull_request({"tools/validate.py": "# changed\n"})
+    done, values = run_take(base, tmp_path, head, paths, association="COLLABORATOR", author="Reviewer",
+                            maintainers="someone-else, reviewer")
+    assert done.returncode == 0 and "maintenance pull request (MAINTAINER)" in done.stdout
+    assert values.get("maintenance") == "true"
+    # Listed or not, a pull request that touches an application is an application.
+    head, paths = pull_request({"tools/validate.py": "# changed\n", "applications/ModuleAppCheck/application.yaml": GOOD})
+    done, values = run_take(base, tmp_path, head, paths, association="COLLABORATOR", author="reviewer", maintainers="reviewer")
+    assert "maintenance" not in values
 
 
 def test_take_application_refuses_the_same_change_from_anyone_else(repository, tmp_path):
@@ -225,7 +239,8 @@ ANSWERS = {
     ("OWNER", ["docs/x.md"], True, "false"),
     ("OWNER", [f"docs/{i}.md" for i in range(3000)], False, "false"),
 ])
-def test_agreement_is_not_asked_of_maintenance(tmp_path, association, files, fails, maintenance, author="someone", bot=""):
+def test_agreement_is_not_asked_of_maintenance(tmp_path, association, files, fails, maintenance, author="someone", bot="",
+                                               maintainers=""):
     """cla.yaml: only a pull request by owners or members that changes nothing under applications/ skips the agreement."""
     workflow = yaml.safe_load((BASE / ".github" / "workflows" / "cla.yaml").read_text())
     scope, agreement = workflow["jobs"]["agreement"]["steps"][:2]
@@ -236,7 +251,8 @@ def test_agreement_is_not_asked_of_maintenance(tmp_path, association, files, fai
     (tmp_path / "bin" / "gh").chmod(0o755)
     output = tmp_path / "output"
     env = {**os.environ, "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}", "GITHUB_OUTPUT": str(output),
-           "REPO": "o/r", "NUMBER": "1", "ASSOCIATION": association, "GH_TOKEN": "x", "AUTHOR": author, "IMAGE_UPDATE_BOT": bot}
+           "REPO": "o/r", "NUMBER": "1", "ASSOCIATION": association, "GH_TOKEN": "x", "AUTHOR": author, "IMAGE_UPDATE_BOT": bot,
+           "MAINTAINERS": maintainers}
     subprocess.run(["bash", "-e", "-c", scope["run"]], env=env, check=True, capture_output=True)
     assert output.read_text().strip() == f"maintenance={maintenance}"
 
@@ -248,6 +264,16 @@ def test_agreement_is_not_asked_of_maintenance(tmp_path, association, files, fai
 ])
 def test_agreement_is_not_asked_of_the_image_update_app(tmp_path, files, bot, maintenance):
     test_agreement_is_not_asked_of_maintenance(tmp_path, "NONE", files, False, maintenance, author="mikopbx-image-update[bot]", bot=bot)
+
+
+@pytest.mark.parametrize("files, author, maintenance", [
+    (["docs/x.md"], "Reviewer", "true"),
+    (["docs/x.md", "applications/ModuleX/application.yaml"], "reviewer", "false"),
+    (["docs/x.md"], "stranger", "false"),
+])
+def test_agreement_is_not_asked_of_listed_maintainers(tmp_path, files, author, maintenance):
+    test_agreement_is_not_asked_of_maintenance(tmp_path, "COLLABORATOR", files, False, maintenance, author=author,
+                                               maintainers="other reviewer")
 
 
 def test_triage_comment_lists_the_facts():
