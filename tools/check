@@ -38,8 +38,10 @@ Requires git, Docker, PyYAML and jsonschema (pip install -r tools/requirements.t
 """
 import argparse
 import datetime
+import hashlib
 import json
 import pathlib
+import shutil
 import sys
 import tempfile
 import time
@@ -83,6 +85,7 @@ def main():
     parser.add_argument("--previous-commit", help="the previously approved commit, to test the update from it")
     parser.add_argument("--expect", type=pathlib.Path, help="YAML with what the module must show: {workers: N, api: true}")
     parser.add_argument("--output", type=pathlib.Path, help="also write the JSON result here")
+    parser.add_argument("--package", type=pathlib.Path, help="also keep the package (the publisher's ZIP, never the test copy) here")
     parser.add_argument("--keep", action="store_true", help="leave the container running (for debugging)")
     parser.add_argument("--config", type=pathlib.Path, default=CONFIG, help="test configuration (default: config/mikopbx.yaml; another one only to try a new image)")
     options = parser.parse_args()
@@ -141,6 +144,11 @@ def main():
                 info = check_install.package(application["repo"], application["commit"], work / "git", work / f"{module_id}.zip",
                                              config["timeouts"]["clone"], test_copy=work / f"{module_id}.test.zip")
                 result["package"] = info
+                if options.package:
+                    # Kept before any of the module's code runs; its sha256 is checked again, so the copy is the ZIP hashed.
+                    shutil.copyfile(work / f"{module_id}.zip", options.package)
+                    if hashlib.sha256(options.package.read_bytes()).hexdigest() != info["sha256"]:
+                        raise Broken(f"the kept package {options.package} is not the ZIP that was hashed")
                 paid = (f"; paid module (lic_product_id {info['lic_product_id']}, lic_feature_id {info['lic_feature_id']}): "
                         f"test copy sha256 {info['test_copy_sha256']}, differs from the package only in module.json "
                         f"{', '.join(info['test_copy_diff']['module_json_keys'])} = 0 (unpacked and compared)") if "test_copy_sha256" in info else ""
