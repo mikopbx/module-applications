@@ -363,7 +363,7 @@ def check_online(result, registry, timeout=120):
         check_repository(result, fetched)
     finally:
         fetched.close()
-    verdict = registry.check(config["module_id"], config["publisher_id"], config["support_email"])
+    verdict = registry.check(config["module_id"], config.get("publisher_id"), config["support_email"])
     result.registry = dataclasses.asdict(verdict)
     if verdict.status == "mismatch":
         result.problem("APP-011", verdict.detail)

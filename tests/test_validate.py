@@ -136,6 +136,33 @@ def test_template_follows_the_schema(tmp_path):
     assert problems_of(validate.validate(tmp_path)) == []
 
 
+@pytest.mark.parametrize("value, ok", [(None, True), (42, True), (1, True), ("42", False), (0, False), (-1, False), (1.5, False), (True, False)],
+                         ids=["absent", "42", "1", "string", "zero", "negative", "fraction", "boolean"])
+def test_publisher_id_is_optional_but_checked_when_given(tmp_path, value, ok):
+    """LIC-675: the licence server finds the publisher by the pull request's author; a given publisher_id is still validated."""
+    directory = tmp_path / "applications" / "ModuleExample"
+    directory.mkdir(parents=True)
+    application = yaml.safe_load((BASE / "templates" / "application.yaml").read_text())
+    application.pop("publisher_id")
+    if value is not None:
+        application["publisher_id"] = value
+    (directory / "application.yaml").write_text(yaml.safe_dump(application, sort_keys=False))
+    found = problems_of(validate.validate(tmp_path))
+    if ok:
+        assert found == []
+    else:
+        assert any(rule == "APP-001" and "publisher_id" in message for rule, message in found), found
+
+
+def test_application_without_publisher_id_passes_online_as_not_checked(tmp_path, repos):
+    shutil.copytree(HERE / "fixtures" / "good" / "control", tmp_path, dirs_exist_ok=True)
+    path = tmp_path / "applications" / "ModuleAppCheck" / "application.yaml"
+    path.write_text("".join(line for line in path.read_text().splitlines(keepends=True) if not line.startswith("publisher_id:")))
+    [result] = validate.validate(tmp_path, online=True)
+    assert not result.problems and result.config.get("publisher_id") is None
+    assert result.registry["status"] == "not_checked" and result.as_dict()["publisher_id"] is None
+
+
 def test_rules_are_unique_and_every_cited_rule_exists():
     ids = [rule["id"] for rule in validate.RULES["rules"]]
     assert len(ids) == len(set(ids))
