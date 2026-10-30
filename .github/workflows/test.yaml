@@ -176,7 +176,8 @@ jobs:
           resume="$(openssl rand -hex 16)"
           echo "::stop-commands::$resume"
           code=0
-          python3 tools/check "$MODULE_ID" "${previous[@]}" --output "$RUNNER_TEMP/result.json" < /dev/null > /dev/null || code=$?
+          mkdir -p "$RUNNER_TEMP/package"
+          python3 tools/check "$MODULE_ID" "${previous[@]}" --output "$RUNNER_TEMP/result.json" --package "$RUNNER_TEMP/package/$MODULE_ID.zip" < /dev/null > /dev/null || code=$?
           echo "::$resume::"
           jq --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --arg head "$HEAD_SHA" \
             '. + {workflow_run: $run, pull_request_head: $head}' "$RUNNER_TEMP/result.json" > result.json || true
@@ -191,7 +192,24 @@ jobs:
           # A paid module: say what the tests could not check without a licence key (rule LIFE-007).
           jq -r 'select(.license_required) | "Paid module, **license_required**: \(.license_required)."' result.json >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
           [ "$code" = 0 ] || echo "::error::$MODULE_ID on $ARCH $result."
+          if [ "$code" = 0 ]; then
+            # The package artifact is the publisher's ZIP that tools/check hashed, never the test copy of a paid module.
+            sha256=$(jq -r '.package.sha256' result.json)
+            [ "$(sha256sum "$RUNNER_TEMP/package/$MODULE_ID.zip" | cut -d' ' -f1)" = "$sha256" ] \
+              || { echo "::error::The kept package is not the ZIP whose sha256 is in result.json."; exit 3; }
+            echo "Package \`$MODULE_ID.zip\`, sha256 \`$sha256\`." >> "$GITHUB_STEP_SUMMARY"
+          fi
           exit "$code"
+
+      - name: Keep the package for seven days
+        # Only a package that passed. The registration after merge takes it with result.json and provenance.json of
+        # this run (LIC-613), and the reviewer downloads it before approving.
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (sha-pinned)
+        with:
+          name: package-${{ needs.application.outputs.module_id }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/package/${{ needs.application.outputs.module_id }}.zip
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Keep the result for seven days
         if: always()
@@ -201,6 +219,66 @@ jobs:
           path: result.json
           if-no-files-found: ignore
           retention-days: 7
+
+  package:
+    # Tells the reviewer where to download the tested package and its sha256, for the head that was tested. Runs
+    # nothing from the module and reads result.json only as data; its write permission is for the comment alone.
+    needs: [application, module]
+    if: always() && needs.application.outputs.module_id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (sha-pinned)
+        continue-on-error: true
+        with:
+          pattern: result-${{ needs.application.outputs.module_id }}-*
+          path: results
+
+      - name: Post the package links, or update the comment already there
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          MODULE_ID: ${{ needs.application.outputs.module_id }}
+          HEAD_SHA: ${{ needs.application.outputs.head }}
+          MODULE: ${{ needs.module.result }}
+          RUN_ID: ${{ github.run_id }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [[ $PR =~ ^[0-9]+$ && $HEAD_SHA =~ ^[0-9a-f]{40}$ && $MODULE_ID =~ ^Module[A-Za-z0-9]{1,60}$ ]] || { echo "::error::Bad pull request, head or module_id."; exit 1; }
+          marker="<!-- module-applications-package -->"
+          rows="" hashes=""
+          while read -r id name; do
+            arch=${name#"package-$MODULE_ID-"}
+            [[ $arch =~ ^(x86_64|arm64)$ ]] || continue
+            sha256=$(jq -r '.package.sha256 // empty' "results/result-$MODULE_ID-$arch/result.json" 2>/dev/null || true)
+            [[ $sha256 =~ ^[0-9a-f]{64}$ ]] || sha256="(no sha256 in result.json)"
+            rows+="| $arch | [package-$MODULE_ID-$arch]($RUN/artifacts/$id) | \`$sha256\` |"$'\n'
+            hashes+="$sha256"$'\n'
+          done < <(gh api "repos/$REPO/actions/runs/$RUN_ID/artifacts" --paginate \
+                     --jq '.artifacts[] | select(.expired | not) | select(.name | startswith("package-")) | "\(.id) \(.name)"' | sort -k2)
+          if [ -n "$rows" ]; then
+            body="$marker"$'\n'"**Tested package** of \`$MODULE_ID\` for head \`$HEAD_SHA\` ([run]($RUN)). Inside each artifact: \`$MODULE_ID.zip\`, the publisher's ZIP that the tests installed; sha256 is of that ZIP, not of the artifact's wrapper. Kept for 7 days."$'\n\n'"| Architecture | Download | sha256 of $MODULE_ID.zip |"$'\n'"|---|---|---|"$'\n'"$rows"
+            if [ "$(sort -u <<< "${hashes%$'\n'}" | wc -l)" -gt 1 ]; then
+              body+=$'\n'"The packages differ between architectures: registration expects one package for all of them."
+            fi
+            [ "$MODULE" = success ] || body+=$'\n'"The tests did not pass on every declared architecture ($MODULE): this is not an approvable package."
+          else
+            body="$marker"$'\n'"No tested package for head \`$HEAD_SHA\` ([run]($RUN)): the tests did not pass on any architecture. A link from an earlier head is not for this one."
+          fi
+          echo "$body" >> "$GITHUB_STEP_SUMMARY"
+          existing=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("'"$marker"'"))) | .id')
+          existing=${existing%%$'\n'*}
+          if [ -n "$existing" ]; then
+            jq -n --arg body "$body" '{body: $body}' | gh api --method PATCH "repos/$REPO/issues/comments/$existing" --input - > /dev/null
+          else
+            jq -n --arg body "$body" '{body: $body}' | gh api --method POST "repos/$REPO/issues/$PR/comments" --input - > /dev/null
+          fi
 
   result:
     # The one check branch protection requires from this workflow: the application's tests passed on every declared

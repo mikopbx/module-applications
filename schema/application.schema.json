@@ -8,7 +8,6 @@
   "required": [
     "schema_version",
     "module_id",
-    "publisher_id",
     "name",
     "description",
     "repo",
@@ -29,7 +28,7 @@
       "pattern": "^Module[A-Za-z0-9]{1,60}$"
     },
     "publisher_id": {
-      "description": "The publisher's id in the MIKO publisher cabinet. Not proof of identity: it is checked against the confirmed publisher.",
+      "description": "Optional. The publisher's id in the MIKO publisher cabinet, a hint and not proof of identity: at registration the licence server finds the publisher by the GitHub id of the pull request's author and, if publisher_id is given, refuses it when the card is not that author's.",
       "type": "integer",
       "minimum": 1
     },

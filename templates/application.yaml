@@ -6,7 +6,8 @@ schema_version: 1
 # moduleUniqueID in module.json at `commit`, and the name of this directory. Module + letters and digits.
 module_id: ModuleExample
 
-# Your id in the MIKO publisher cabinet. It identifies the card the checks compare with; it does not prove who you are.
+# Optional: your id in the MIKO publisher cabinet. It does not prove who you are: at registration the licence server
+# finds your publisher card by your GitHub account and refuses a publisher_id that is not yours. Leave it out if unsure.
 publisher_id: 42
 
 name: Example module

@@ -5,7 +5,10 @@
 The checks need two answers only the server has: is support_email the address on the confirmed publisher's card, and
 is module_id free or already this publisher's. The server API is LIC-613 and will be provided later (owner's decision of
 2026-10-27); until then this is an explicit STUB: `default()` returns StubRegistry, which answers "not_checked". A "not_checked" verdict never fails validation and never counts as
-passed: whoever registers the module after merge (LIC-614) must ask the server itself.
+passed, and it is not to be turned into one here. The publisher is checked by the licence server itself when it
+registers the merged application (LIC-613): it finds the publisher by the GitHub id of the pull request's author and, if
+publisher_id is given, refuses it when the card is not that author's (publisher_mismatch). publisher_id is optional, so
+check() may get None for it.
 
 A registry implements one method:
 
