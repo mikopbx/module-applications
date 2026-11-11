@@ -55,7 +55,7 @@ def test_same_digest_changes_nothing(tmp_path, capsys):
 def test_moved_tag_rewrites_only_the_image_entry(tmp_path, capsys):
     moved = FakeRegistry(NEW["index"], NEW["x86_64"], NEW["arm64"], NEW["version"])
     config, code = run(tmp_path, moved, "--write")
-    assert code == 0 and capsys.readouterr().out.startswith("behind: pinned 2026.6.34")
+    assert code == 0 and capsys.readouterr().out.startswith(f"behind: pinned {PINNED['version']}")
     after = yaml.safe_load(config.read_text())
     assert after["images"] == [{
         "version": "2026.7.1", "image": "docker.io/mikopbx/mikopbx", "tag": "2026.7.1", "digest": NEW["index"],
@@ -66,8 +66,8 @@ def test_moved_tag_rewrites_only_the_image_entry(tmp_path, capsys):
     changed = [line for line in difflib.unified_diff(CONFIG.splitlines(), config.read_text().splitlines(), lineterm="", n=0)
                if line[:1] in "+-" and not line.startswith(("+++", "---"))]
     assert sorted(changed) == sorted([
-        '-  - version: "2026.6.34"', '+  - version: "2026.7.1"',
-        '-    tag: "2026.6.34"', '+    tag: "2026.7.1"',
+        f'-  - version: "{PINNED["version"]}"', '+  - version: "2026.7.1"',
+        f'-    tag: "{PINNED["tag"]}"', '+    tag: "2026.7.1"',
         f"-    digest: {PINNED['digest']}", f"+    digest: {NEW['index']}",
         f"-      x86_64: {PINNED['platforms']['x86_64']}", f"+      x86_64: {NEW['x86_64']}",
         f"-      arm64: {PINNED['platforms']['arm64']}", f"+      arm64: {NEW['arm64']}",
