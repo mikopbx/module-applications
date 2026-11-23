@@ -6,7 +6,7 @@ description: >-
   Provision employee SIP accounts from the MikoPBX employee tab using
   one-time QR codes, with optional PNG delivery to the saved email address.
 repo: https://github.com/ertankucukoglu/ModuleQRProvisioning
-commit: "030b005de3c5cb9d7bf00d6063dd3f4b753d53a2"
+commit: "ff6dafecc9dd49f79b98e2de376577666f7ada1b"
 license: GPL-3.0-or-later
 support_email: "ertan.kucukoglu@gmail.com"
 maintainers: [ertankucukoglu]
