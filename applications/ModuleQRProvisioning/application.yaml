@@ -1,0 +1,16 @@
+# Use the publisher card's public support email.
+schema_version: 1
+module_id: ModuleQRProvisioning
+name: QR Provisioning
+description: >-
+  Provision employee SIP accounts from the MikoPBX employee tab using
+  one-time QR codes, with optional PNG delivery to the saved email address.
+repo: https://github.com/ertankucukoglu/ModuleQRProvisioning
+commit: "030b005de3c5cb9d7bf00d6063dd3f4b753d53a2"
+license: GPL-3.0-or-later
+support_email: "ertan.kucukoglu@gmail.com"
+maintainers: [ertankucukoglu]
+compatibility:
+  min_pbx_version: "2026.8.2"
+  max_pbx_version: null
+  architectures: [x86_64, arm64]
