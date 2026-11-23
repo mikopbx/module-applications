@@ -1,0 +1,408 @@
+name: "Release"
+# Builds, checks and reviews one exact commit of an admitted module for a release, and keeps the ZIP and the results
+# as artifacts of the run. Started by the server (workflow_dispatch) after a module is admitted; the server, not this
+# workflow, decides publication. Documented in docs/release.md.
+#
+#   intake ─▶ package ─▶ check (x86_64, arm64) ─▶ ai-prepare ─▶ ai-review (environment ai-review) ─▶ result
+#
+# Threat model: the same as test.yaml (read it) and ai-review.yaml.
+#   - This file, tools/, config/ and rules/ come from the default branch (`intake` refuses any other ref), and
+#     applications/<module_id>/application.yaml is read from the default branch: a release is only for a module that
+#     is already admitted, from the repository named there. Nothing from the module's repository is checked out; it is
+#     fetched at the exact SHA as git objects and repacked by tools/package and tools/check; no script of the module
+#     runs on a runner. Its PHP runs only in the MikoPBX container of tools/check (no volume, no Docker socket, no
+#     environment, --internal network), exactly as in test.yaml.
+#   - Dispatch inputs are untrusted text. They are checked in `intake` (tools/release.py, strict patterns) and travel
+#     only through `env:`, never inside a `run:` script. Checked values reach `with:` and artifact names, where an
+#     expression is data, not shell.
+#   - Only `ai-review` has a secret (the Anthropic key, in the environment `ai-review`, as in ai-review.yaml); it runs
+#     on its own VM, never starts MikoPBX and never runs the module. No job has a write permission.
+#   - Results are evidence, not credentials: tools/release.py accepts a check result only if it names this module, SHA,
+#     ZIP, architecture and a MikoPBX image of config/mikopbx.yaml. Whoever consumes the artifacts must check the run.
+#
+# Never add a secret (other than in `ai-review`), a write permission or a step that runs the module outside the
+# container to this file. Contract-dependent steps are marked TODO(LIC-615).
+
+run-name: "Release ${{ inputs.module_id }} ${{ inputs.version }} (job ${{ inputs.job_id }})"
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: "Id of the release job on the server"
+        required: true
+        type: string
+      module_id:
+        description: "Module id, for example ModuleExample (must be admitted: applications/<module_id>/ exists)"
+        required: true
+        type: string
+      repo:
+        description: "Module repository, https://github.com/<owner>/<name> (must be the admitted one)"
+        required: true
+        type: string
+      sha:
+        description: "Full commit SHA to release: exactly 40 lowercase hex characters"
+        required: true
+        type: string
+      version:
+        description: "Release version; must equal version in module.json of that commit"
+        required: true
+        type: string
+      architectures:
+        description: "Architectures to check, comma separated: x86_64,arm64"
+        required: false
+        type: string
+        default: "x86_64,arm64"
+
+permissions:
+  contents: read
+
+env:
+  # How long the ZIP and the results are kept: one constant for every artifact of this workflow (as in test.yaml).
+  RETENTION_DAYS: 7
+
+concurrency:
+  group: release-${{ inputs.job_id }}
+  cancel-in-progress: false
+
+jobs:
+  intake:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      job_id: ${{ steps.check.outputs.job_id }}
+      module_id: ${{ steps.check.outputs.module_id }}
+      repo: ${{ steps.check.outputs.repo }}
+      sha: ${{ steps.check.outputs.sha }}
+      version: ${{ steps.check.outputs.version }}
+      architectures: ${{ steps.check.outputs.architectures }}
+      matrix: ${{ steps.check.outputs.matrix }}
+      application: ${{ steps.application.outputs.application }}
+    steps:
+      - name: Run only from the default branch
+        env:
+          REF: ${{ github.ref }}
+          DEFAULT_REF: refs/heads/${{ github.event.repository.default_branch }}
+        run: |
+          [ "$REF" = "$DEFAULT_REF" ] || { echo "::error::A release runs only from the default branch, not from $REF."; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with:
+          persist-credentials: false
+
+      - name: Install PyYAML and jsonschema from Ubuntu
+        run: python3 -c 'import yaml, jsonschema' 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml python3-jsonschema; }
+
+      - name: Check the inputs and that the module is admitted with this repository
+        id: check
+        env:
+          JOB_ID: ${{ inputs.job_id }}
+          MODULE_ID: ${{ inputs.module_id }}
+          REPO: ${{ inputs.repo }}
+          SHA: ${{ inputs.sha }}
+          VERSION: ${{ inputs.version }}
+          ARCHITECTURES: ${{ inputs.architectures }}
+        run: |
+          set -euo pipefail
+          python3 tools/release.py inputs --application-out "$RUNNER_TEMP/application.yaml" > "$RUNNER_TEMP/outputs"
+          cat "$RUNNER_TEMP/outputs" >> "$GITHUB_OUTPUT"
+          sed 's/^matrix=.*//' "$RUNNER_TEMP/outputs" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify the job with the server by job_id (stub)
+        env:
+          JOB_ID: ${{ steps.check.outputs.job_id }}
+        run: |
+          # TODO(LIC-615): ask the server whether job $JOB_ID exists, is open and is for this module, repo, SHA and
+          # version, and stop here if not. The contract (endpoint, authentication, answer) is not defined yet, so this
+          # step only says so. Until then anyone who can start a workflow here can start a release run; its artifacts
+          # decide nothing by themselves.
+          echo "::notice::TODO(LIC-615): job $JOB_ID was not verified with the server (contract not defined)."
+
+      - name: Keep the application to test (the admitted one, with commit = the release SHA)
+        id: application
+        run: echo "application=$(base64 -w0 "$RUNNER_TEMP/application.yaml")" >> "$GITHUB_OUTPUT"
+
+  package:
+    needs: intake
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      sha256: ${{ steps.verify.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with:
+          persist-credentials: false
+
+      - name: Install PyYAML and jsonschema from Ubuntu
+        run: python3 -c 'import yaml, jsonschema' 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml python3-jsonschema; }
+
+      - name: Build the ZIP from the exact SHA (tools/package, as tools/check does)
+        env:
+          REPO: ${{ needs.intake.outputs.repo }}
+          SHA: ${{ needs.intake.outputs.sha }}
+          MODULE_ID: ${{ needs.intake.outputs.module_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/zip"
+          python3 tools/package "$REPO" "$SHA" "$RUNNER_TEMP/zip/$MODULE_ID.zip" < /dev/null
+
+      - name: The ZIP is this module at this version, and its sha256
+        id: verify
+        env:
+          JOB_ID: ${{ needs.intake.outputs.job_id }}
+          MODULE_ID: ${{ needs.intake.outputs.module_id }}
+          REPO: ${{ needs.intake.outputs.repo }}
+          SHA: ${{ needs.intake.outputs.sha }}
+          VERSION: ${{ needs.intake.outputs.version }}
+          ARCHITECTURES: ${{ needs.intake.outputs.architectures }}
+        run: |
+          set -euo pipefail
+          python3 tools/release.py verify-zip "$RUNNER_TEMP/zip/$MODULE_ID.zip" > "$RUNNER_TEMP/verified"
+          cat "$RUNNER_TEMP/verified" >> "$GITHUB_OUTPUT"
+          echo "ZIP \`$MODULE_ID.zip\` of \`$SHA\`: $(tr '\n' ' ' < "$RUNNER_TEMP/verified")" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the ZIP for the checks and the result
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (sha-pinned)
+        with:
+          name: zip
+          path: ${{ runner.temp }}/zip/${{ needs.intake.outputs.module_id }}.zip
+          if-no-files-found: error
+          retention-days: ${{ env.RETENTION_DAYS }}
+
+  check:
+    # The same install / enable / disable / uninstall check as the `module` job of test.yaml (tools/check, the same
+    # container limits and isolation), on the application with commit = the release SHA. test.yaml is not a reusable
+    # workflow: its `module` job is wired to the pull request jobs around it, and a change there cannot be tested
+    # without a real pull request. If you change the step below, change `module` in test.yaml too.
+    needs: [intake, package]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.intake.outputs.matrix) }}
+    name: check (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    # tools/check allows itself 30 minutes per image.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with:
+          persist-credentials: false
+
+      - name: Install PyYAML and jsonschema from Ubuntu
+        run: python3 -c 'import yaml, jsonschema' 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml python3-jsonschema; }
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (sha-pinned)
+        with:
+          name: zip
+          path: zip
+
+      - name: Write the application to test
+        env:
+          MODULE_ID: ${{ needs.intake.outputs.module_id }}
+          APPLICATION: ${{ needs.intake.outputs.application }}
+        run: |
+          set -euo pipefail
+          [[ $MODULE_ID =~ ^Module[A-Za-z0-9]{1,60}$ ]] || { echo "::error::Bad module_id."; exit 1; }
+          rm -rf "applications/$MODULE_ID"
+          mkdir -p "applications/$MODULE_ID"
+          base64 -d <<< "$APPLICATION" > "applications/$MODULE_ID/application.yaml"
+
+      - name: Test the module with tools/check
+        env:
+          MODULE_ID: ${{ needs.intake.outputs.module_id }}
+          SHA: ${{ needs.intake.outputs.sha }}
+          ZIP_SHA256: ${{ needs.package.outputs.sha256 }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          # Until the token is printed again, the runner reads none of the module's or MikoPBX's output as a workflow command.
+          resume="$(openssl rand -hex 16)"
+          echo "::stop-commands::$resume"
+          code=0
+          mkdir -p "$RUNNER_TEMP/package"
+          python3 tools/check "$MODULE_ID" --output "$RUNNER_TEMP/result.json" --package "$RUNNER_TEMP/package/$MODULE_ID.zip" < /dev/null > /dev/null || code=$?
+          echo "::$resume::"
+          jq --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --arg sha "$SHA" \
+            '. + {workflow_run: $run, release_sha: $sha}' "$RUNNER_TEMP/result.json" > result.json || true
+
+          case $code in
+            0) result="passes" ;;
+            1) result="fails (the log says which step)" ;;
+            2) result="breaks the rules (the log lists them)" ;;
+            *) result="could not be checked: tools/check exited $code" ;;
+          esac
+          echo "\`$MODULE_ID\` on $ARCH $result." >> "$GITHUB_STEP_SUMMARY"
+          [ "$code" = 0 ] || { echo "::error::$MODULE_ID on $ARCH $result."; exit "$code"; }
+          # The ZIP tools/check built on this runner must be the very ZIP built once in `package`: reproducible bytes.
+          [[ $ZIP_SHA256 =~ ^[0-9a-f]{64}$ ]] || { echo "::error::No sha256 from the package job."; exit 3; }
+          [ "$(sha256sum "$RUNNER_TEMP/package/$MODULE_ID.zip" | cut -d' ' -f1)" = "$ZIP_SHA256" ] \
+            || { echo "::error::tools/check built a ZIP that differs from the one the package job built."; exit 3; }
+          [ "$(sha256sum "zip/$MODULE_ID.zip" | cut -d' ' -f1)" = "$ZIP_SHA256" ] \
+            || { echo "::error::The downloaded ZIP is not the one the package job hashed."; exit 3; }
+
+      - name: Keep the result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (sha-pinned)
+        with:
+          name: check-${{ matrix.arch }}
+          path: result.json
+          if-no-files-found: ignore
+          retention-days: ${{ env.RETENTION_DAYS }}
+
+  ai-prepare:
+    # No key here. Builds the review's inputs (as `prepare` of ai-review.yaml does): the source as a git archive.
+    needs: [intake, package, check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with:
+          persist-credentials: false
+
+      - name: Install PyYAML and jsonschema from Ubuntu
+        run: python3 -c 'import yaml, jsonschema' 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml python3-jsonschema; }
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (sha-pinned)
+        with:
+          name: zip
+          path: zip
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (sha-pinned)
+        with:
+          pattern: check-*
+          path: results
+
+      - name: Write the application and the review's inputs
+        env:
+          JOB_ID: ${{ needs.intake.outputs.job_id }}
+          MODULE_ID: ${{ needs.intake.outputs.module_id }}
+          REPO: ${{ needs.intake.outputs.repo }}
+          SHA: ${{ needs.intake.outputs.sha }}
+          VERSION: ${{ needs.intake.outputs.version }}
+          ARCHITECTURES: ${{ needs.intake.outputs.architectures }}
+          APPLICATION: ${{ needs.intake.outputs.application }}
+        run: |
+          set -euo pipefail
+          base64 -d <<< "$APPLICATION" > "$RUNNER_TEMP/application.yaml"
+          python3 tools/release.py ai-inputs --results results --zip "zip/$MODULE_ID.zip" --application "$RUNNER_TEMP/application.yaml" --out inputs
+
+      - name: Keep the inputs for the review
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (sha-pinned)
+        with:
+          name: ai-inputs
+          path: inputs/
+          retention-days: ${{ env.RETENTION_DAYS }}
+
+  ai-review:
+    # Same analyser, policy, configuration and environment as ai-review.yaml (config/ai-review.yaml). The pull
+    # request's per-author daily limit and report cache do not apply here: a run is started by the server, and the
+    # per-run limits (turns, cost, time) still bound it. TODO(LIC-615): decide with the server whether it limits how
+    # often it dispatches a release.
+    needs: ai-prepare
+    # Pinned: tools/requirements-ai.txt holds wheels for this image's CPython 3.12.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: ai-review
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (sha-pinned)
+        with:
+          name: ai-inputs
+          path: inputs
+
+      - name: Install the analyser's dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet --require-hashes -r tools/requirements-ai.txt
+
+      - name: Review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" tools/ai_review.py review --inputs inputs --out report || true
+          cat report/report.md >> "$GITHUB_STEP_SUMMARY"
+          # The verdict is in the report and in release-result.json; this job fails only if it could not write a report.
+          test -s report/report.json
+
+      - name: Keep the report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (sha-pinned)
+        with:
+          name: ai-report
+          path: report/
+          retention-days: ${{ env.RETENTION_DAYS }}
+
+  result:
+    # The artifact the server reads: the ZIP, release-result.json and the AI report, from the same run. It decides
+    # nothing; it fails the run when something did not pass, so that the run is red as well.
+    needs: [intake, package, check, ai-prepare, ai-review]
+    if: always() && needs.intake.result == 'success' && needs.package.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 (sha-pinned)
+        with:
+          persist-credentials: false
+
+      - name: Install PyYAML and jsonschema from Ubuntu
+        run: python3 -c 'import yaml, jsonschema' 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml python3-jsonschema; }
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (sha-pinned)
+        with:
+          name: zip
+          path: zip
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (sha-pinned)
+        continue-on-error: true
+        with:
+          pattern: check-*
+          path: results
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 (sha-pinned)
+        continue-on-error: true
+        with:
+          name: ai-report
+          path: report
+
+      - name: Write release-result.json
+        id: write
+        env:
+          JOB_ID: ${{ needs.intake.outputs.job_id }}
+          MODULE_ID: ${{ needs.intake.outputs.module_id }}
+          REPO: ${{ needs.intake.outputs.repo }}
+          SHA: ${{ needs.intake.outputs.sha }}
+          VERSION: ${{ needs.intake.outputs.version }}
+          ARCHITECTURES: ${{ needs.intake.outputs.architectures }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          cp "zip/$MODULE_ID.zip" "release/$MODULE_ID.zip"
+          [ ! -f report/report.json ] || cp report/report.json release/ai-report.json
+          python3 tools/release.py result --results results --zip "release/$MODULE_ID.zip" --ai-report report/report.json --out release/release-result.json
+          cat release/release-result.json
+          echo "passed=$(jq -r .passed release/release-result.json)" >> "$GITHUB_OUTPUT"
+          jq -r '"Release `\(.module_id)` \(.version) at `\(.sha)`: checks passed \(.checks_passed), AI review passed \(.ai_review_passed), zip sha256 `\(.zip.sha256)`."' release/release-result.json >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the ZIP and the results
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 (sha-pinned)
+        with:
+          name: release-${{ needs.intake.outputs.job_id }}
+          path: release/
+          if-no-files-found: error
+          retention-days: ${{ env.RETENTION_DAYS }}
+
+      - name: Hand the result to the server (stub)
+        env:
+          JOB_ID: ${{ needs.intake.outputs.job_id }}
+          PASSED: ${{ steps.write.outputs.passed }}
+        run: |
+          # TODO(LIC-615): give the server release-result.json and the ZIP of this run (or tell it the run id and the
+          # artifact name release-$JOB_ID) in the way the contract defines. Nothing is sent: no endpoint, credential
+          # or secret exists for this yet. The server may instead fetch the artifact by run id.
+          echo "::notice::TODO(LIC-615): the result of job $JOB_ID (passed: $PASSED) was not handed to the server (contract not defined)."
+
+      - name: Fail the run unless every check and the AI review passed
+        env:
+          PASSED: ${{ steps.write.outputs.passed }}
+        run: |
+          [ "$PASSED" = true ] || { echo "::error::Not every check and the AI review passed: see release-result.json."; exit 1; }
